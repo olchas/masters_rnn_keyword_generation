@@ -50,7 +50,7 @@ class BeamSearch():
         # Initialize the live sample with the prime.
         for i, label in enumerate(self.prime_labels):
             prime_sample.append(label)
-
+            # KAMIL liczenie score dla prime wordow na podstawie kolejnych predykcji nastepnych slow przez model
             # The first word does not contribute to the score as the probs have
             # not yet been determined.
             if i > 0:

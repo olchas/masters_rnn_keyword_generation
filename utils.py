@@ -32,6 +32,9 @@ class TextLoader():
         Tokenization/string cleaning for all datasets except for SST.
         Original taken from https://github.com/yoonkim/CNN_sentence/blob/master/process_data
         """
+        # KAMIL usuwanie znakow poza literami lacinskimi, koreanskimi, japonskimi (?), znakami ,?!'`()
+        # KAMIL dodanie spacji przed apostrofy, przecinki, etc
+        # KAMIL usuniecie wielokrotnych spacji
         string = re.sub(r"[^가-힣A-Za-z0-9(),!?\'\`]", " ", string)
         string = re.sub(r"\'s", " \'s", string)
         string = re.sub(r"\'ve", " \'ve", string)
@@ -67,8 +70,9 @@ class TextLoader():
 
         # Optional text cleaning or make them lower case, etc.
         #data = self.clean_str(data)
+        # KAMIL tu chyba usuwaja podzial na zdania
         x_text = data.split()
-
+        # KAMIL words to lista slow posortowana od najczestszych
         self.vocab, self.words = self.build_vocab(x_text)
         self.vocab_size = len(self.words)
 
@@ -77,6 +81,7 @@ class TextLoader():
 
         #The same operation like this [self.vocab[word] for word in x_text]
         # index of words as our basic data
+        # KAMIL zamiana danych w postaci listy slow na liste indexow
         self.tensor = np.array(list(map(self.vocab.get, x_text)))
         # Save the data to data.npy
         np.save(tensor_file, self.tensor)
@@ -91,17 +96,24 @@ class TextLoader():
                                                    self.seq_length))
 
     def create_batches(self):
+        # KAMIL jeden batch to pewna liczba (batch_size) sekwencji o dlugosci seq_length
         self.num_batches = int(self.tensor.size / (self.batch_size *
                                                    self.seq_length))
         if self.num_batches==0:
             assert False, "Not enough data. Make seq_length and batch_size small."
 
+        # KAMIL ograniczenie danych do wielokrotnosci batcha
         self.tensor = self.tensor[:self.num_batches * self.batch_size * self.seq_length]
         xdata = self.tensor
+        # KAMIL target data to po prostu to samo, co input data -> zamienic na x: keywordy, y: zdanie?
         ydata = np.copy(self.tensor)
-
+        # KAMIL przesuniecie pierwszego slowa na koniec w targecie: po co?
         ydata[:-1] = xdata[1:]
         ydata[-1] = xdata[0]
+        # KAMIL podzielenie danych na num_batches kawalkow
+        # KAMIL reshape zmienia array na macierz batch_size wierszy
+        # KAMIL split powoduje, ze otrzymujesz liste num_batches arrayow o wymiarach batch_size x seq_length
+        # KAMIL czyli kazdy batch to batch_size sekwencji seq_length wyrazow (nie kolejnych sekwencji)
         self.x_batches = np.split(xdata.reshape(self.batch_size, -1), self.num_batches, 1)
         self.y_batches = np.split(ydata.reshape(self.batch_size, -1), self.num_batches, 1)
 

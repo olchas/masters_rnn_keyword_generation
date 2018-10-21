@@ -85,6 +85,7 @@ def train(args):
     with open(os.path.join(args.save_dir, 'words_vocab.pkl'), 'wb') as f:
         cPickle.dump((data_loader.words, data_loader.vocab), f)
 
+    # KAMIL model sieci
     model = Model(args)
 
     merged = tf.summary.merge_all()
@@ -94,12 +95,16 @@ def train(args):
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
         train_writer.add_graph(sess.graph)
         tf.global_variables_initializer().run()
+        # KAMIL cos od zapisywania modeli
         saver = tf.train.Saver(tf.global_variables())
         # restore model
         if args.init_from is not None:
             saver.restore(sess, ckpt.model_checkpoint_path)
         for e in range(model.epoch_pointer.eval(), args.num_epochs):
+            # KAMIL decay rate powoduje zmniejszanie sie learning rate w miare postepow
             sess.run(tf.assign(model.lr, args.learning_rate * (args.decay_rate ** e)))
+            # KAMIL data loader laduje dane
+            # KAMIL w kazdej epoce caly zbior danych jest analizowany?
             data_loader.reset_batch_pointer()
             state = sess.run(model.initial_state)
             speed = 0
@@ -107,15 +112,22 @@ def train(args):
                 assign_op = model.epoch_pointer.assign(e)
                 sess.run(assign_op)
             if args.init_from is not None:
+                # KAMIL czy mozna kontynuowac tylko na tych samych danych?
                 data_loader.pointer = model.batch_pointer.eval()
                 args.init_from = None
+            # KAMIL dla kazdego batcha, czym sa x i y, czyli dane wejsciowe i target? czy u mnie to beda keywordy i zdania?
             for b in range(data_loader.pointer, data_loader.num_batches):
                 start = time.time()
-                x, y = data_loader.next_batch()
+                x, y = data_loader.next_batch
                 feed = {model.input_data: x, model.targets: y, model.initial_state: state,
                         model.batch_time: speed}
+                # KAMIL sess.run chyba sie podawalo parametry do zmiany i dane do treningu - feed
+                # KAMIL model.train_op - optimizer do minimalizacji model.cost, model.final_state - stan sieci po tym batchu danych, jest poczatkowym stanem w nastepnym kroku?
+                # KAMIL merged - zbior zmiennych sieci modyfikowalnych? takie wartosci jak max, min, mean macierzy W i wektora b
+                # KAMIL sess.run zwraca koncowe postaci tych wartosci po zakonczeniu obliczen
                 summary, train_loss, state, _, _ = sess.run([merged, model.cost, model.final_state,
                                                              model.train_op, model.inc_batch_pointer_op], feed)
+                # KAMIL zapis logu?
                 train_writer.add_summary(summary, e * data_loader.num_batches + b)
                 speed = time.time() - start
                 if (e * data_loader.num_batches + b) % args.batch_size == 0:
@@ -123,6 +135,8 @@ def train(args):
                         .format(e * data_loader.num_batches + b,
                                 args.num_epochs * data_loader.num_batches,
                                 e, train_loss, speed))
+                # KAMIL czestotliwosc zapisu jest okreslana przez liczbe epok razy liczbe batchy
+
                 if (e * data_loader.num_batches + b) % args.save_every == 0 \
                         or (e==args.num_epochs-1 and b == data_loader.num_batches-1): # save for the last result
                     checkpoint_path = os.path.join(args.save_dir, 'model.ckpt')
