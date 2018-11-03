@@ -1,8 +1,11 @@
+import os
+import random
+from six.moves import cPickle
+
+import numpy as np
 import tensorflow as tf
 from tensorflow.contrib import rnn
 from tensorflow.contrib import legacy_seq2seq
-import random
-import numpy as np
 
 from beam import BeamSearch
 
@@ -65,7 +68,19 @@ class Model():
             # KAMIL tutaj okreslenie embeddingu jako zmiennej sieci? rozmiar embeddingu taki sam jak rozmiar hidden layer sieci
             with tf.device("/cpu:0"):
                 # KAMIL tu by trzeba zamienic zmienne na gotowy embedding z GloVe
-                embedding = tf.get_variable("embedding", [args.vocab_size, args.rnn_size])
+                if args.processed_embeddings is not None:
+
+                    with open(args.processed_embeddings, 'rb') as f:
+                        pretrained_embedding = cPickle.load(f)
+
+                    train_embedding = not args.dont_train_embeddings
+                    embedding = tf.get_variable(name="embedding",
+                                                shape=[args.vocab_size, args.rnn_size],
+                                                initializer=tf.constant_initializer(pretrained_embedding),
+                                                trainable=train_embedding)
+                else:
+                    embedding = tf.get_variable(name="embedding",
+                                                shape=[args.vocab_size, args.rnn_size])
                 # KAMIL powiazanie wejscia z embeddingiem
                 # KAMIL funkcja zwraca wiersze z macierzy embedding odpowiadajace indeksom z input data
                 # KAMIL chyba powinno wystarczy zastapienie embedding odpowiednia macierza, mozna tez zostawic zmienna, ale ja zainicjowac gotowymi embedingami
@@ -85,10 +100,12 @@ class Model():
         # KAMIL wykorzystanie wyjscia do propagacji wstecznej - obliczenie lossu (costu) przez porowananie z targetem
         self.logits = tf.matmul(output, softmax_w) + softmax_b
         self.probs = tf.nn.softmax(self.logits)
+        # loss ktory jest liczony na podstawie prawdopodobienstw slow, ktore maja wypadac nastepne w sekwencji
         loss = legacy_seq2seq.sequence_loss_by_example([self.logits],
                 [tf.reshape(self.targets, [-1])],
                 [tf.ones([args.batch_size * args.seq_length])],
                 args.vocab_size)
+        # sredni blad na jedno slowo
         self.cost = tf.reduce_sum(loss) / args.batch_size / args.seq_length
         tf.summary.scalar("cost", self.cost)
         self.final_state = last_state

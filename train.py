@@ -20,7 +20,7 @@ def main():
                        help='directory containing tensorboard logs')
     parser.add_argument('--save_dir', type=str, default='save',
                        help='directory to store checkpointed models')
-    parser.add_argument('--rnn_size', type=int, default=256,
+    parser.add_argument('--rnn_size', type=int, default=200,
                        help='size of RNN hidden state')
     parser.add_argument('--num_layers', type=int, default=2,
                        help='number of layers in the RNN')
@@ -42,6 +42,14 @@ def main():
                        help='decay rate for rmsprop')
     parser.add_argument('--gpu_mem', type=float, default=0.666,
                        help='%% of gpu memory to be allocated to this process. Default is 66.6%%')
+    parser.add_argument('--pretrained_embeddings', type=str, default=None,
+                       help='path to txt file with pretrained embeddings that should be matched with vocabulary and pickled;'
+                            'this will overwrite embedding provided by processed_embeddings argument')
+    parser.add_argument('--processed_embeddings', type=str, default=None,
+                       help='path to pickled numpy array with processed embeddings that should be used as initialization;'
+                            'this embedding must match vocabulary of input data')
+    parser.add_argument('--dont_train_embeddings', action='store_true', default=False,
+                       help='if you do not want to train embeddings')
     parser.add_argument('--init_from', type=str, default=None,
                        help="""continue training from saved model at this path. Path must contain files saved by previous training process:
                             'config.pkl'        : configuration;
@@ -53,9 +61,16 @@ def main():
     args = parser.parse_args()
     train(args)
 
+
 def train(args):
-    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.input_encoding)
+    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.pretrained_embeddings, args.input_encoding)
     args.vocab_size = data_loader.vocab_size
+
+    if args.pretrained_embeddings is not None:
+        embedding_dir = os.path.dirname(args.pretrained_embeddings)
+        embedding_file = os.path.splitext(os.path.basename(args.pretrained_embeddings))[0]
+        embedding_array_file = embedding_file + '_processed.pkl'
+        args.processed_embeddings = os.path.join(embedding_dir, embedding_array_file)
 
     # check compatibility if training is continued from previously saved model
     if args.init_from is not None:
@@ -118,7 +133,7 @@ def train(args):
             # KAMIL dla kazdego batcha, czym sa x i y, czyli dane wejsciowe i target? czy u mnie to beda keywordy i zdania?
             for b in range(data_loader.pointer, data_loader.num_batches):
                 start = time.time()
-                x, y = data_loader.next_batch
+                x, y = data_loader.next_batch()
                 feed = {model.input_data: x, model.targets: y, model.initial_state: state,
                         model.batch_time: speed}
                 # KAMIL sess.run chyba sie podawalo parametry do zmiany i dane do treningu - feed
@@ -143,6 +158,7 @@ def train(args):
                     saver.save(sess, checkpoint_path, global_step = e * data_loader.num_batches + b)
                     print("model saved to {}".format(checkpoint_path))
         train_writer.close()
+
 
 if __name__ == '__main__':
     main()

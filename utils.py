@@ -8,7 +8,7 @@ import re
 import itertools
 
 class TextLoader():
-    def __init__(self, data_dir, batch_size, seq_length, encoding=None):
+    def __init__(self, data_dir, batch_size, seq_length, pretrained_embeddings=None, encoding=None):
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.seq_length = seq_length
@@ -20,7 +20,7 @@ class TextLoader():
         # Let's not read voca and data from file. We many change them.
         if True or not (os.path.exists(vocab_file) and os.path.exists(tensor_file)):
             print("reading text file")
-            self.preprocess(input_file, vocab_file, tensor_file, encoding)
+            self.preprocess(input_file, vocab_file, tensor_file, pretrained_embeddings, encoding)
         else:
             print("loading preprocessed files")
             self.load_preprocessed(vocab_file, tensor_file)
@@ -50,30 +50,57 @@ class TextLoader():
         string = re.sub(r"\s{2,}", " ", string)
         return string.strip().lower()
 
-    def build_vocab(self, sentences):
+    def build_vocab(self, sentences, pretrained_embeddings):
         """
         Builds a vocabulary mapping from word to index based on the sentences.
         Returns vocabulary mapping and inverse vocabulary mapping.
         """
+
         # Build vocabulary
         word_counts = collections.Counter(sentences)
         # Mapping from index to word
         vocabulary_inv = [x[0] for x in word_counts.most_common()]
-        vocabulary_inv = list(sorted(vocabulary_inv))
+        #vocabulary_inv = [x for x in vocabulary_inv if vocabulary_inv]
+        # KAMIL jaki sens ma linia ponizej: po co to sortowac, jak powyzej posortowano wg czestosci wystepowania
+        #vocabulary_inv = list(sorted(vocabulary_inv))
+        if pretrained_embeddings is not None:
+            embedding_dict = {}
+            with open(pretrained_embeddings) as f:
+                for line in f:
+                    items = line.split()
+                    word = items[0][1:-1]
+                    embedding_dict[word] = items[1:]
+            embedding_size = len(next(iter(embedding_dict.values())))
+
+            vocabulary_embedding = []
+            for word in vocabulary_inv:
+                word_embedding = embedding_dict.get(word)
+                if word_embedding is None:
+                    word_embedding = np.random.rand(embedding_size).tolist()
+                    print('word missing embedding:' + word)
+                vocabulary_embedding.append(word_embedding)
+
+            vocabulary_embedding = np.array(vocabulary_embedding)
+            embedding_dir = os.path.dirname(pretrained_embeddings)
+            embedding_file = os.path.splitext(os.path.basename(pretrained_embeddings))[0]
+            embedding_array_file = embedding_file + '_processed.pkl'
+            with open(os.path.join(embedding_dir, embedding_array_file), 'wb') as f:
+                cPickle.dump(vocabulary_embedding, f)
+
         # Mapping from word to index
         vocabulary = {x: i for i, x in enumerate(vocabulary_inv)}
         return [vocabulary, vocabulary_inv]
 
-    def preprocess(self, input_file, vocab_file, tensor_file, encoding):
+    def preprocess(self, input_file, vocab_file, tensor_file, pretrained_embeddings, encoding):
         with codecs.open(input_file, "r", encoding=encoding) as f:
             data = f.read()
 
         # Optional text cleaning or make them lower case, etc.
         #data = self.clean_str(data)
-        # KAMIL tu chyba usuwaja podzial na zdania
+        # KAMIL tu usuwaja podzial na zdania
         x_text = data.split()
         # KAMIL words to lista slow posortowana od najczestszych
-        self.vocab, self.words = self.build_vocab(x_text)
+        self.vocab, self.words = self.build_vocab(x_text, pretrained_embeddings)
         self.vocab_size = len(self.words)
 
         with open(vocab_file, 'wb') as f:
@@ -107,9 +134,9 @@ class TextLoader():
         xdata = self.tensor
         # KAMIL target data to po prostu to samo, co input data -> zamienic na x: keywordy, y: zdanie?
         ydata = np.copy(self.tensor)
-        # KAMIL przesuniecie pierwszego slowa na koniec w targecie: po co?
+        # KAMIL przesuniecie pierwszego slowa na koniec w targecie: po co? -> zeby targetem bylo slow nastepne po input
         ydata[:-1] = xdata[1:]
-        ydata[-1] = xdata[0]
+        ydata[-1] = xdata[0] # mozna zmienic na pierwsze slowo po self.tensor[:self.num_batches * self.batch_size * self.seq_length]
         # KAMIL podzielenie danych na num_batches kawalkow
         # KAMIL reshape zmienia array na macierz batch_size wierszy
         # KAMIL split powoduje, ze otrzymujesz liste num_batches arrayow o wymiarach batch_size x seq_length
