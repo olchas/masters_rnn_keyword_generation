@@ -14,7 +14,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--save_dir', type=str, default='save',
                        help='model directory to load stored checkpointed models from')
-    parser.add_argument('-n', type=int, default=200,
+    parser.add_argument('-n', type=int, default=50,
                        help='number of words to sample')
     parser.add_argument('--prime', type=str, default=' ',
                        help='prime text')
@@ -26,6 +26,8 @@ def main():
                        help='0 to use max at each timestep, 1 to sample at each timestep, 2 to sample on spaces')
     parser.add_argument('--count', '-c', type=int, default=1,
                        help='number of samples to print')
+    parser.add_argument('--tokens', '-t', default=False, action='store_true',
+                       help='use <START> and <END> tokens to determine start and end of sequence')
     parser.add_argument('--quiet', '-q', default=False, action='store_true',
                        help='suppress printing the prime text (default false)')
 
@@ -45,7 +47,7 @@ def sample(args):
         if ckpt and ckpt.model_checkpoint_path:
             saver.restore(sess, ckpt.model_checkpoint_path)
             for _ in range(args.count):
-              print(model.sample(sess, words, vocab, args.n, args.prime, args.sample, args.pick, args.width, args.quiet))
+              print(model.sample(sess, words, vocab, args.n, args.prime, args.sample, args.pick, args.width, args.quiet, args.tokens))
 
 if __name__ == '__main__':
     main()

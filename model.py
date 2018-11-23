@@ -8,6 +8,7 @@ from tensorflow.contrib import rnn
 from tensorflow.contrib import legacy_seq2seq
 
 from beam import BeamSearch
+from utils import clean_str
 
 class Model():
     def __init__(self, args, infer=False):
@@ -61,6 +62,7 @@ class Model():
         # KAMIL liczba wierszy - rozmiar warstwy, liczba kolumn - wagi dla kazdego slowa ze slownika
         with tf.variable_scope('rnnlm'):
             # KAMIL te zmienne chyba trzeba zainicjowac wartosciami nauczonymi w celu uzyskania poprawnego syntaxu na 'zwyklych danych' (bez atencji)
+            # KAMIL to chyba moze byc ostatnia warstwa - output layer
             softmax_w = tf.get_variable("softmax_w", [args.rnn_size, args.vocab_size])
             variable_summaries(softmax_w)
             softmax_b = tf.get_variable("softmax_b", [args.vocab_size])
@@ -100,12 +102,12 @@ class Model():
         # KAMIL wykorzystanie wyjscia do propagacji wstecznej - obliczenie lossu (costu) przez porowananie z targetem
         self.logits = tf.matmul(output, softmax_w) + softmax_b
         self.probs = tf.nn.softmax(self.logits)
-        # loss ktory jest liczony na podstawie prawdopodobienstw slow, ktore maja wypadac nastepne w sekwencji
+        # KAMIL loss ktory jest liczony na podstawie prawdopodobienstw slow, ktore maja wypadac nastepne w sekwencji
         loss = legacy_seq2seq.sequence_loss_by_example([self.logits],
                 [tf.reshape(self.targets, [-1])],
                 [tf.ones([args.batch_size * args.seq_length])],
                 args.vocab_size)
-        # sredni blad na jedno slowo
+        # KAMIL sredni blad na jedno slowo
         self.cost = tf.reduce_sum(loss) / args.batch_size / args.seq_length
         tf.summary.scalar("cost", self.cost)
         self.final_state = last_state
@@ -118,7 +120,7 @@ class Model():
         optimizer = tf.train.AdamOptimizer(self.lr)
         self.train_op = optimizer.apply_gradients(zip(grads, tvars))
 
-    def sample(self, sess, words, vocab, num=200, prime='first all', sampling_type=1, pick=0, width=4, quiet=False):
+    def sample(self, sess, words, vocab, num=50, prime='first all', sampling_type=1, pick=0, width=4, quiet=False, tokens=False):
         def weighted_pick(weights):
             t = np.cumsum(weights)
             s = np.sum(weights)
@@ -137,20 +139,26 @@ class Model():
                                             feed)
             return probs, final_state
 
-        def beam_search_pick(prime, width):
+        def beam_search_pick(prime, width, tokens=False):
             """Returns the beam search pick."""
             if not len(prime) or prime == ' ':
                 prime = random.choice(list(vocab.keys()))
             prime_labels = [vocab.get(word, 0) for word in prime.split()]
             # KAMIL inicjalizacja beam search stanem zerowym, funkcja do predykcji i labelami prime wordow
+
             bs = BeamSearch(beam_search_predict,
                             sess.run(self.cell.zero_state(1, tf.float32)),
                             prime_labels)
-            samples, scores = bs.search(None, None, k=width, maxsample=num)
+            eos = vocab.get('<\s>', 0) if tokens else None
+            samples, scores = bs.search(None, eos, k=width, maxsample=num)
             # zwrocenie najlepszej sekwencji
             return samples[np.argmin(scores)]
 
         ret = ''
+        if tokens and not prime.startswith('<s>'):
+            prime = '<s> ' + prime
+        prime = clean_str(prime)
+        print (prime)
         if pick == 1:
             # KAMIL tutaj nalezy ustawic inital state na srednia keywordow
             state = sess.run(self.cell.zero_state(1, tf.float32))
@@ -188,11 +196,12 @@ class Model():
                 else: # sampling_type == 1 default:
                     sample = weighted_pick(p)
                 # KAMIL sample to pewnie indeks
-                pred = words[sample]
-                ret += ' ' + pred
-                word = pred
+                word = words[sample]
+                if tokens and word == '<\s>':
+                    break
+                ret += ' ' + word
         elif pick == 2:
-            pred = beam_search_pick(prime, width)
+            pred = beam_search_pick(prime, width, tokens)
             for i, label in enumerate(pred):
                 ret += ' ' + words[label] if i > 0 else words[label]
-        return ret
+        return ret.strip('<s> ').strip(' <\s')

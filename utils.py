@@ -7,6 +7,29 @@ import numpy as np
 import re
 import itertools
 
+def clean_str(string):
+    """
+    Tokenization/string cleaning for all datasets except for SST.
+    Original taken from https://github.com/yoonkim/CNN_sentence/blob/master/process_data
+    """
+    # KAMIL usuwanie znakow poza literami lacinskimi, koreanskimi, japonskimi (?), znakami ,?!'`()
+    # KAMIL dodanie spacji przed apostrofy, przecinki, etc
+    # KAMIL usuniecie wielokrotnych spacji
+    string = re.sub(r"[^A-Za-z0-9(),!?\'\<>`]", " ", string)
+    string = re.sub(r"\'s", " \'s", string)
+    string = re.sub(r"\'ve", " \'ve", string)
+    string = re.sub(r"\'t", " \'t", string)
+    string = re.sub(r"\'re", " \'re", string)
+    string = re.sub(r"\'d", " \'d", string)
+    string = re.sub(r"\'ll", " \'ll", string)
+    string = re.sub(r",", " , ", string)
+    string = re.sub(r"!", " ! ", string)
+    string = re.sub(r"\(", " \( ", string)
+    string = re.sub(r"\)", " \) ", string)
+    string = re.sub(r"\?", " \? ", string)
+    string = re.sub(r"\s{2,}", " ", string)
+    return string.strip()
+
 class TextLoader():
     def __init__(self, data_dir, batch_size, seq_length, pretrained_embeddings=None, encoding=None):
         self.data_dir = data_dir
@@ -27,29 +50,6 @@ class TextLoader():
         self.create_batches()
         self.reset_batch_pointer()
 
-    def clean_str(self, string):
-        """
-        Tokenization/string cleaning for all datasets except for SST.
-        Original taken from https://github.com/yoonkim/CNN_sentence/blob/master/process_data
-        """
-        # KAMIL usuwanie znakow poza literami lacinskimi, koreanskimi, japonskimi (?), znakami ,?!'`()
-        # KAMIL dodanie spacji przed apostrofy, przecinki, etc
-        # KAMIL usuniecie wielokrotnych spacji
-        string = re.sub(r"[^가-힣A-Za-z0-9(),!?\'\`]", " ", string)
-        string = re.sub(r"\'s", " \'s", string)
-        string = re.sub(r"\'ve", " \'ve", string)
-        string = re.sub(r"n\'t", " n\'t", string)
-        string = re.sub(r"\'re", " \'re", string)
-        string = re.sub(r"\'d", " \'d", string)
-        string = re.sub(r"\'ll", " \'ll", string)
-        string = re.sub(r",", " , ", string)
-        string = re.sub(r"!", " ! ", string)
-        string = re.sub(r"\(", " \( ", string)
-        string = re.sub(r"\)", " \) ", string)
-        string = re.sub(r"\?", " \? ", string)
-        string = re.sub(r"\s{2,}", " ", string)
-        return string.strip().lower()
-
     def build_vocab(self, sentences, pretrained_embeddings):
         """
         Builds a vocabulary mapping from word to index based on the sentences.
@@ -68,16 +68,18 @@ class TextLoader():
             with open(pretrained_embeddings) as f:
                 for line in f:
                     items = line.split()
-                    word = items[0][1:-1]
-                    embedding_dict[word] = items[1:]
+                    word = items[0]
+                    # skip word containing non ascii characters
+                    if not any(ord(letter)>127 for letter in word):
+                        embedding_dict[word] = items[1:]
             embedding_size = len(next(iter(embedding_dict.values())))
 
             vocabulary_embedding = []
             for word in vocabulary_inv:
-                word_embedding = embedding_dict.get(word)
+                word_embedding = embedding_dict.get(word.lower())
                 if word_embedding is None:
                     word_embedding = np.random.rand(embedding_size).tolist()
-                    print('word missing embedding:' + word)
+                    print('word missing embedding: ' + word)
                 vocabulary_embedding.append(word_embedding)
 
             vocabulary_embedding = np.array(vocabulary_embedding)
@@ -96,7 +98,7 @@ class TextLoader():
             data = f.read()
 
         # Optional text cleaning or make them lower case, etc.
-        #data = self.clean_str(data)
+        data = self.clean_str(data)
         # KAMIL tu usuwaja podzial na zdania
         x_text = data.split()
         # KAMIL words to lista slow posortowana od najczestszych
