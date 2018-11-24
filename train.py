@@ -42,6 +42,12 @@ def main():
                        help='decay rate for rmsprop')
     parser.add_argument('--gpu_mem', type=float, default=0.666,
                        help='%% of gpu memory to be allocated to this process. Default is 66.6%%')
+    parser.add_argument('--use_bpe', default=False, action='store_true',
+                       help='true if you want to use bpe on train data')
+    parser.add_argument('--bpe_size',type=int, default=32000,
+                       help='size of bpe vocabulary, valid only when use_bpe is true')
+    parser.add_argument('--bpe_model_path', type=str, default=None,
+                       help='path to pretrained bpe model, valid only when use_bpe is true')
     parser.add_argument('--pretrained_embeddings', type=str, default=None,
                        help='path to txt file with pretrained embeddings that should be matched with vocabulary and pickled;'
                             'this will overwrite embedding provided by processed_embeddings argument')
@@ -63,7 +69,8 @@ def main():
 
 
 def train(args):
-    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.pretrained_embeddings, args.input_encoding)
+    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.use_bpe, args.bpe_size, args.bpe_model_path,
+                             args.pretrained_embeddings, args.input_encoding)
     args.vocab_size = data_loader.vocab_size
 
     if args.pretrained_embeddings is not None:

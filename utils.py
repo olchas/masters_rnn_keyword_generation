@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
-import os
+
 import codecs
 import collections
-from six.moves import cPickle
-import numpy as np
-import re
 import itertools
+import os
+import re
+from functools import reduce
+
+import numpy as np
+import sentencepiece as spm
+from six.moves import cPickle
+
 
 def clean_str(string):
     """
@@ -15,7 +20,7 @@ def clean_str(string):
     # KAMIL usuwanie znakow poza literami lacinskimi, koreanskimi, japonskimi (?), znakami ,?!'`()
     # KAMIL dodanie spacji przed apostrofy, przecinki, etc
     # KAMIL usuniecie wielokrotnych spacji
-    string = re.sub(r"[^A-Za-z0-9(),!?\'\<>`]", " ", string)
+    string = re.sub(r"[^A-Za-z0-9(),!?\'\\<>`]", " ", string)
     string = re.sub(r"\'s", " \'s", string)
     string = re.sub(r"\'ve", " \'ve", string)
     string = re.sub(r"\'t", " \'t", string)
@@ -30,8 +35,9 @@ def clean_str(string):
     string = re.sub(r"\s{2,}", " ", string)
     return string.strip()
 
+
 class TextLoader():
-    def __init__(self, data_dir, batch_size, seq_length, pretrained_embeddings=None, encoding=None):
+    def __init__(self, data_dir, batch_size, seq_length, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings=None, encoding=None):
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.seq_length = seq_length
@@ -43,26 +49,28 @@ class TextLoader():
         # Let's not read voca and data from file. We many change them.
         if True or not (os.path.exists(vocab_file) and os.path.exists(tensor_file)):
             print("reading text file")
-            self.preprocess(input_file, vocab_file, tensor_file, pretrained_embeddings, encoding)
+            self.preprocess(input_file, vocab_file, tensor_file, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings, encoding)
         else:
             print("loading preprocessed files")
             self.load_preprocessed(vocab_file, tensor_file)
         self.create_batches()
         self.reset_batch_pointer()
 
-    def build_vocab(self, sentences, pretrained_embeddings):
+    def build_vocab(self, sentences, bpe_model, pretrained_embeddings):
         """
         Builds a vocabulary mapping from word to index based on the sentences.
         Returns vocabulary mapping and inverse vocabulary mapping.
         """
-
-        # Build vocabulary
-        word_counts = collections.Counter(sentences)
-        # Mapping from index to word
-        vocabulary_inv = [x[0] for x in word_counts.most_common()]
-        #vocabulary_inv = [x for x in vocabulary_inv if vocabulary_inv]
-        # KAMIL jaki sens ma linia ponizej: po co to sortowac, jak powyzej posortowano wg czestosci wystepowania
-        #vocabulary_inv = list(sorted(vocabulary_inv))
+        if bpe_model is not None:
+            vocabulary_inv = [bpe_model.IdToPiece(x) for x in range(bpe_model.GetPieceSize())]
+        else:
+            # Build vocabulary
+            word_counts = collections.Counter(sentences)
+            # Mapping from index to word
+            vocabulary_inv = [x[0] for x in word_counts.most_common()]
+            #vocabulary_inv = [x for x in vocabulary_inv if vocabulary_inv]
+            # KAMIL jaki sens ma linia ponizej: po co to sortowac, jak powyzej posortowano wg czestosci wystepowania
+            #vocabulary_inv = list(sorted(vocabulary_inv))
         if pretrained_embeddings is not None:
             embedding_dict = {}
             with open(pretrained_embeddings) as f:
@@ -70,13 +78,13 @@ class TextLoader():
                     items = line.split()
                     word = items[0]
                     # skip word containing non ascii characters
-                    if not any(ord(letter)>127 for letter in word):
+                    if not any(ord(letter) > 127 for letter in word):
                         embedding_dict[word] = items[1:]
             embedding_size = len(next(iter(embedding_dict.values())))
 
             vocabulary_embedding = []
             for word in vocabulary_inv:
-                word_embedding = embedding_dict.get(word.lower())
+                word_embedding = embedding_dict.get(word.lower().strip('▁'))
                 if word_embedding is None:
                     word_embedding = np.random.rand(embedding_size).tolist()
                     print('word missing embedding: ' + word)
@@ -93,25 +101,40 @@ class TextLoader():
         vocabulary = {x: i for i, x in enumerate(vocabulary_inv)}
         return [vocabulary, vocabulary_inv]
 
-    def preprocess(self, input_file, vocab_file, tensor_file, pretrained_embeddings, encoding):
+    def preprocess(self, input_file, vocab_file, tensor_file, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings, encoding):
         with codecs.open(input_file, "r", encoding=encoding) as f:
             data = f.read()
 
         # Optional text cleaning or make them lower case, etc.
-        data = self.clean_str(data)
+        # data = clean_str(data)
         # KAMIL tu usuwaja podzial na zdania
-        x_text = data.split()
+
+        if use_bpe:
+            bpe_model = spm.SentencePieceProcessor()
+            if bpe_model_path is None:
+                spm.SentencePieceTrainer.Train(
+                    '--input=' + input_file + ' --model_prefix=bpe --vocab_size=' + str(bpe_size) + ' --model_type=bpe')
+
+                bpe_model.Load("bpe.model")
+            else:
+                bpe_model.Load(bpe_model_path)
+            x_text = None
+            # list of encoded sentences with added start and end os sequence tokens
+            sentences = list(map(lambda x: [1] + bpe_model.EncodeAsIds(x) + [2], data.split('\n')))
+        else:
+            bpe_model = None
+            x_text = ' '.join(list(map(lambda x: '<s> ' + x + ' <\s>', data.split('\n')))).split()
         # KAMIL words to lista slow posortowana od najczestszych
-        self.vocab, self.words = self.build_vocab(x_text, pretrained_embeddings)
+        self.vocab, self.words = self.build_vocab(x_text, bpe_model, pretrained_embeddings)
         self.vocab_size = len(self.words)
 
         with open(vocab_file, 'wb') as f:
             cPickle.dump(self.words, f)
-
+        #
         #The same operation like this [self.vocab[word] for word in x_text]
         # index of words as our basic data
         # KAMIL zamiana danych w postaci listy slow na liste indexow
-        self.tensor = np.array(list(map(self.vocab.get, x_text)))
+        self.tensor = np.array(reduce(lambda x, y: x + y, sentences)) if use_bpe else np.array(list(map(self.vocab.get, x_text)))
         # Save the data to data.npy
         np.save(tensor_file, self.tensor)
 

@@ -3,6 +3,7 @@ import random
 from six.moves import cPickle
 
 import numpy as np
+import sentencepiece as spm
 import tensorflow as tf
 from tensorflow.contrib import rnn
 from tensorflow.contrib import legacy_seq2seq
@@ -120,7 +121,7 @@ class Model():
         optimizer = tf.train.AdamOptimizer(self.lr)
         self.train_op = optimizer.apply_gradients(zip(grads, tvars))
 
-    def sample(self, sess, words, vocab, num=50, prime='first all', sampling_type=1, pick=0, width=4, quiet=False, tokens=False):
+    def sample(self, sess, words, vocab, num=50, prime='first all', sampling_type=1, pick=0, width=4, quiet=False, bpe_model_path=None, tokens=False):
         def weighted_pick(weights):
             t = np.cumsum(weights)
             s = np.sum(weights)
@@ -154,28 +155,32 @@ class Model():
             # zwrocenie najlepszej sekwencji
             return samples[np.argmin(scores)]
 
-        ret = ''
+        ret = []
+        # prime = clean_str(prime)
+
+        if bpe_model_path is not None:
+            bpe_model = spm.SentencePieceProcessor()
+            bpe_model.Load(bpe_model_path)
+            prime = " ".join(bpe_model.EncodeAsPieces(prime))
         if tokens and not prime.startswith('<s>'):
             prime = '<s> ' + prime
-        prime = clean_str(prime)
-        print (prime)
+        if not quiet:
+            print(prime)
         if pick == 1:
             # KAMIL tutaj nalezy ustawic inital state na srednia keywordow
             state = sess.run(self.cell.zero_state(1, tf.float32))
             if not len(prime) or prime == ' ':
-                prime  = random.choice(list(vocab.keys()))
-            if not quiet:
-                print(prime)
+                prime = random.choice(list(vocab.keys()))
             for word in prime.split()[:-1]:
                 if not quiet:
                     print(word)
                 x = np.zeros((1, 1))
                 # KAMIL tu sa feedowane primewordy i zmieniany jest w ten sposob tylko stan
-                x[0, 0] = vocab.get(word,0)
+                x[0, 0] = vocab.get(word, 0)
                 feed = {self.input_data: x, self.initial_state:state}
                 [state] = sess.run([self.final_state], feed)
 
-            ret = prime
+            ret = prime.split()
             word = prime.split()[-1]
             # KAMIL tutaj sa feedowane kolejne slowa zwracane przez siec
             # KAMIL jakies zakonczenie po wygenerowaniu kropki konczacej zdanie
@@ -199,9 +204,11 @@ class Model():
                 word = words[sample]
                 if tokens and word == '<\s>':
                     break
-                ret += ' ' + word
+                ret += [word]
         elif pick == 2:
             pred = beam_search_pick(prime, width, tokens)
             for i, label in enumerate(pred):
-                ret += ' ' + words[label] if i > 0 else words[label]
-        return ret.strip('<s> ').strip(' <\s')
+                ret += [words[label] if i > 0 else words[label]]
+        print (ret)
+        ret = bpe_model.DecodePieces(ret) if bpe_model_path is not None else " ".join(ret).strip('<s> ').strip(' <\s')
+        return ret
