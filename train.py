@@ -133,7 +133,7 @@ def train(args):
             if args.init_from is None:
                 assign_op = model.epoch_pointer.assign(e)
                 sess.run(assign_op)
-            if args.init_from is not None:
+            else:
                 # KAMIL czy mozna kontynuowac tylko na tych samych danych?
                 data_loader.pointer = model.batch_pointer.eval()
                 args.init_from = None

@@ -63,7 +63,7 @@ class Model():
         # KAMIL liczba wierszy - rozmiar warstwy, liczba kolumn - wagi dla kazdego slowa ze slownika
         with tf.variable_scope('rnnlm'):
             # KAMIL te zmienne chyba trzeba zainicjowac wartosciami nauczonymi w celu uzyskania poprawnego syntaxu na 'zwyklych danych' (bez atencji)
-            # KAMIL to chyba moze byc ostatnia warstwa - output layer
+            # KAMIL to chyba moze byc tylko ostatnia warstwa - output layer
             softmax_w = tf.get_variable("softmax_w", [args.rnn_size, args.vocab_size])
             variable_summaries(softmax_w)
             softmax_b = tf.get_variable("softmax_b", [args.vocab_size])
@@ -92,14 +92,17 @@ class Model():
 
         # KAMIL tutaj obliczenie wyjscia z sieci dla wejscia
         # KAMIL tu chyba trzeba dodac attention
+        # KAMIL czy tu sie dzieje wybranie slowa wyjsciowego, aby je podac na wejscie w nastepnym kroku? (zamiast slowa z batch?)l
         def loop(prev, _):
             prev = tf.matmul(prev, softmax_w) + softmax_b
             prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
             return tf.nn.embedding_lookup(embedding, prev_symbol)
         # KAMIL tu podstawowa operacja - dekodowanie, obliczenie wyjsc dla wejsc
         # KAMIL last_state - koncowy stan sieci po przejsciu aktualnego batcha danych
+        # KAMIL tutaj definicja wlasciwej sieci
         outputs, last_state = legacy_seq2seq.rnn_decoder(inputs, self.initial_state, cell, loop_function=loop if infer else None, scope='rnnlm')
         output = tf.reshape(tf.concat(outputs, 1), [-1, args.rnn_size])
+        # KAMIL tutaj nalezy dodac atencje
         # KAMIL wykorzystanie wyjscia do propagacji wstecznej - obliczenie lossu (costu) przez porowananie z targetem
         self.logits = tf.matmul(output, softmax_w) + softmax_b
         self.probs = tf.nn.softmax(self.logits)
