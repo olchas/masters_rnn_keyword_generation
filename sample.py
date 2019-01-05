@@ -29,6 +29,9 @@ def main():
                         help='number of samples to print')
     parser.add_argument('--bpe_model_path', type=str, default=None,
                         help='path to bpe model used in training for processing of data')
+    parser.add_argument('--processed_embeddings', type=str, default=None,
+                       help='path to pickled numpy array with processed embeddings that was used for training (if it changed);'
+                            'this embedding must match vocabulary of input data')
     parser.add_argument('--tokens', '-t', default=False, action='store_true',
                         help='use <s> and <\s> tokens to determine start and end of sequence')
     parser.add_argument('--quiet', '-q', default=False, action='store_true',
@@ -41,6 +44,8 @@ def main():
 def sample(args):
     with open(os.path.join(args.save_dir, 'config.pkl'), 'rb') as f:
         saved_args = cPickle.load(f)
+    if args.processed_embeddings is not None:
+        saved_args.processed_embeddings = args.processed_embeddings
     with open(os.path.join(args.save_dir, 'words_vocab.pkl'), 'rb') as f:
         words, vocab = cPickle.load(f)
     model = Model(saved_args, True)

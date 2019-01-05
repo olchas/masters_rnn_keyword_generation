@@ -143,7 +143,7 @@ class Model():
                                             feed)
             return probs, final_state
 
-        def beam_search_pick(prime, width, tokens=False):
+        def beam_search_pick(prime, width, tokens=False, bpe_model_path=None):
             """Returns the beam search pick."""
             if not len(prime) or prime == ' ':
                 prime = random.choice(list(vocab.keys()))
@@ -153,7 +153,7 @@ class Model():
             bs = BeamSearch(beam_search_predict,
                             sess.run(self.cell.zero_state(1, tf.float32)),
                             prime_labels)
-            eos = vocab.get('<\s>', 0) if tokens else None
+            eos = vocab.get('</s>', 0) if bpe_model_path is not None else vocab.get('<\s>', 0) if tokens else None
             samples, scores = bs.search(None, eos, k=width, maxsample=num)
             # zwrocenie najlepszej sekwencji
             return samples[np.argmin(scores)]
@@ -205,11 +205,11 @@ class Model():
                     sample = weighted_pick(p)
                 # KAMIL sample to pewnie indeks
                 word = words[sample]
-                if tokens and word == '<\s>':
+                if tokens and (word == '<\s>' or word == '</s>'):
                     break
                 ret += [word]
         elif pick == 2:
-            pred = beam_search_pick(prime, width, tokens)
+            pred = beam_search_pick(prime, width, tokens, bpe_model_path)
             for i, label in enumerate(pred):
                 ret += [words[label] if i > 0 else words[label]]
         print (ret)
