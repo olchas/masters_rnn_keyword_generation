@@ -1,17 +1,14 @@
 from __future__ import print_function
-import numpy as np
-import tensorflow as tf
-
 import argparse
 import os
-import time
+
+import tensorflow as tf
 from six.moves import cPickle
 
-from utils import TextLoader
 from model import Model
 
 
-def main():
+def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--save_dir', type=str, default='save',
                         help='model directory to load stored checkpointed models from')
@@ -34,10 +31,16 @@ def main():
                             'this embedding must match vocabulary of input data')
     parser.add_argument('--tokens', '-t', default=False, action='store_true',
                         help='use <s> and <\s> tokens to determine start and end of sequence')
+    parser.add_argument('--keywords', '-k', type=str, nargs='*', default=[],
+                        help='list of space separated keywords to use for initial state')
     parser.add_argument('--quiet', '-q', default=False, action='store_true',
                         help='suppress printing the prime text (default false)')
 
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main():
+    args = parse_arguments()
     sample(args)
 
 
@@ -57,7 +60,7 @@ def sample(args):
             saver.restore(sess, ckpt.model_checkpoint_path)
             for _ in range(args.count):
                 print(model.sample(sess, words, vocab, args.n, args.prime, args.sample, args.pick, args.width,
-                                   args.quiet, args.bpe_model_path, args.tokens))
+                                   args.quiet, args.bpe_model_path, args.tokens, args.keywords))
 
 
 if __name__ == '__main__':

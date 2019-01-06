@@ -20,7 +20,7 @@ def clean_str(string):
     # KAMIL usuwanie znakow poza literami lacinskimi, koreanskimi, japonskimi (?), znakami ,?!'`()
     # KAMIL dodanie spacji przed apostrofy, przecinki, etc
     # KAMIL usuniecie wielokrotnych spacji
-    string = re.sub(r"[^A-Za-z0-9(),!?\'\\<>`]", " ", string)
+    string = re.sub(r"[^A-Za-z0-9(),!?\'\\/<>`]", " ", string)
     string = re.sub(r"\'s", " \'s", string)
     string = re.sub(r"\'ve", " \'ve", string)
     string = re.sub(r"\'t", " \'t", string)
