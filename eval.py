@@ -65,6 +65,8 @@ def evaluate(args):
             tagged_utterances = f.read().strip().split('\n')
         keywords = [[word.split('_')[0] for word in utterance.split()[args.prime:] if word.endswith(tuple(args.pos_tags))]
                     for utterance in tagged_utterances]
+        with open(os.path.join(args.output_dir, 'keywords.txt'), 'w') as f:
+            f.write('\n'.join([' '.join(keyword_group) for keyword_group in keywords]) + '\n')
     else:
         keywords = [[]] * len(test_utterances)
 
@@ -89,13 +91,13 @@ def evaluate(args):
         os.makedirs(args.output_dir)
 
     with open(os.path.join(args.output_dir, 'generated_utterances.txt'), 'w') as f:
-        f.write('\n'.join(generated_utterances))
+        f.write('\n'.join(generated_utterances) + '\n')
 
     with open(os.path.join(args.output_dir, 'generated_utterances_stripped.txt'), 'w') as f:
-        f.write('\n'.join(map(lambda x: ' '.join(x.split()[args.prime:]), generated_utterances)))
+        f.write('\n'.join(map(lambda x: ' '.join(x.split()[args.prime:]), generated_utterances)) + '\n')
 
     with open(os.path.join(args.output_dir, 'test_utterances_stripped.txt'), 'w') as f:
-        f.write('\n'.join(map(lambda x: ' '.join(x.split()[args.prime:]), test_utterances)))
+        f.write('\n'.join(map(lambda x: ' '.join(x.split()[args.prime:]), test_utterances)) + '\n')
 
     metrics_dict_stripped = compute_metrics(hypothesis=os.path.join(args.output_dir, 'generated_utterances_stripped.txt'),
                                             references=[os.path.join(args.output_dir, 'test_utterances_stripped.txt')],
