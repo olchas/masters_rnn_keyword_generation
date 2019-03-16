@@ -30,6 +30,8 @@ def main():
                        help='minibatch size')
     parser.add_argument('--seq_length', type=int, default=25,
                        help='RNN sequence length')
+    parser.add_argument('--vocab_size', type=int, default=None,
+                       help='max size of vocabulary of most common words (non bpe models only); words outside of limit will be turned to <unk> tokens; None for all words')
     parser.add_argument('--num_epochs', type=int, default=50,
                        help='number of epochs')
     parser.add_argument('--save_every', type=int, default=1000,
@@ -69,7 +71,7 @@ def main():
 
 
 def train(args):
-    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.use_bpe, args.bpe_size, args.bpe_model_path,
+    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.vocab_size, args.use_bpe, args.bpe_size, args.bpe_model_path,
                              args.pretrained_embeddings, args.input_encoding)
     args.vocab_size = data_loader.vocab_size
 
@@ -99,6 +101,9 @@ def train(args):
         # open saved vocab/dict and check if vocabs/dicts are compatible
         with open(os.path.join(args.init_from, 'words_vocab.pkl'), 'rb') as f:
             saved_words, saved_vocab = cPickle.load(f)
+
+        #print(data_loader.words)
+
         assert saved_words==data_loader.words, "Data and loaded model disagree on word set!"
         assert saved_vocab==data_loader.vocab, "Data and loaded model disagree on dictionary mappings!"
 
@@ -140,8 +145,11 @@ def train(args):
             # KAMIL dla kazdego batcha, czym sa x i y, czyli dane wejsciowe i target? czy u mnie to beda keywordy i zdania?
             for b in range(data_loader.pointer, data_loader.num_batches):
                 start = time.time()
-                x, y = data_loader.next_batch()
-                feed = {model.input_data: x, model.targets: y, model.initial_state: state,
+                x, y, target_weights = data_loader.next_batch()
+
+                target_sequence_length = np.sum(target_weights, axis=0)
+
+                feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights, model.target_sequence_length: target_sequence_length, model.initial_state: state,
                         model.batch_time: speed}
                 # KAMIL sess.run chyba sie podawalo parametry do zmiany i dane do treningu - feed
                 # KAMIL model.train_op - optimizer do minimalizacji model.cost, model.final_state - stan sieci po tym batchu danych, jest poczatkowym stanem w nastepnym kroku?

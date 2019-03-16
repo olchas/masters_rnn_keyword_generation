@@ -12,9 +12,9 @@ from beam import BeamSearch
 from utils import clean_str
 
 class Model():
-    def __init__(self, args, infer=False):
+    def __init__(self, args, helper_type=None):
         self.args = args
-        if infer:
+        if helper_type is not None:
             args.batch_size = 1
             args.seq_length = 1
 
@@ -40,7 +40,11 @@ class Model():
         # KAMIL placeholdery sluza do ladowania danych treningowych
         # KAMIL potrzebny placeholder na slowa kluczowe do atencji
         self.input_data = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
-        self.targets = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
+        # self.targets = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
+        self.targets = tf.placeholder(tf.int32, [args.seq_length, args.batch_size])
+        # self.target_weights = tf.placeholder(tf.float32, [args.batch_size, args.seq_length])
+        self.target_weights = tf.placeholder(tf.float32, [args.seq_length, args.batch_size])
+        self.target_sequence_length = tf.placeholder(tf.int32, args.batch_size)
         # KAMIL to initial_state na poczatku treningu, a nie ten, co jest srednia slow kluczowych (chyba)
         self.initial_state = cell.zero_state(args.batch_size, tf.float32)
         # KAMIL zmienne ktore sie zmieniaja ale nie sa parametrami sieci, wiec nie sa trenowalne
@@ -68,10 +72,11 @@ class Model():
         with tf.variable_scope('rnnlm'):
             # KAMIL te zmienne chyba trzeba zainicjowac wartosciami nauczonymi w celu uzyskania poprawnego syntaxu na 'zwyklych danych' (bez atencji)
             # KAMIL to chyba moze byc tylko ostatnia warstwa - output layer
-            softmax_w = tf.get_variable("softmax_w", [args.rnn_size, args.vocab_size])
-            variable_summaries(softmax_w)
-            softmax_b = tf.get_variable("softmax_b", [args.vocab_size])
-            variable_summaries(softmax_b)
+            # softmax_w = tf.get_variable("softmax_w", [args.rnn_size, args.vocab_size])
+            # variable_summaries(softmax_w)
+            # softmax_b = tf.get_variable("softmax_b", [args.vocab_size])
+            # variable_summaries(softmax_b)
+
             # KAMIL tutaj okreslenie embeddingu jako zmiennej sieci? rozmiar embeddingu taki sam jak rozmiar hidden layer sieci
             with tf.device("/cpu:0"):
                 # KAMIL tu by trzeba zamienic zmienne na gotowy embedding z GloVe
@@ -92,7 +97,11 @@ class Model():
                 # KAMIL funkcja zwraca wiersze z macierzy embedding odpowiadajace indeksom z input data
                 # KAMIL chyba powinno wystarczy zastapienie embedding odpowiednia macierza, mozna tez zostawic zmienna, ale ja zainicjowac gotowymi embedingami
                 inputs = tf.split(tf.nn.embedding_lookup(embedding, self.input_data), args.seq_length, 1)
+                # KAMIL to przeraba na liste kolejnych wartsoci z sekwencji w batchu (pierwsze wartosci, potem drugie itd)
+                # KAMIL to ponizej usuwa niepotrzebny wymiar 1, zostawiajac liste tensorow o wymiarach: rozmiar batcha, rozmiar embeddingu
                 inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
+
+
 
         self.embedding = embedding
 
@@ -101,27 +110,96 @@ class Model():
         # KAMIL czy tu sie dzieje wybranie slowa wyjsciowego, aby je podac na wejscie w nastepnym kroku? (zamiast slowa z batch?) -> tak na potrzeby testu
         # KAMIL do treningu z atencja chyba potrzebna by byla nowa petla, ktora by miala dostep do stanu 
         # KAMIL do atencji jest nam potrzebny zero padding na sekwencjach w batchu
-        def loop(prev, _):
-            prev = tf.matmul(prev, softmax_w) + softmax_b
-            prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
-            return tf.nn.embedding_lookup(embedding, prev_symbol)
+        # def test_loop(prev, _):
+        #     prev = tf.matmul(prev, softmax_w) + softmax_b
+        #     prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
+        #     return tf.nn.embedding_lookup(embedding, prev_symbol)
+
+        # def train_loop(prev, i):
+        #     state =
+        #     prev = tf.matmul(prev, softmax_w) + softmax_b
+        #     prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
+        #     return inputs[i + 1]
         # KAMIL tu podstawowa operacja - dekodowanie, obliczenie wyjsc dla wejsc
         # KAMIL last_state - koncowy stan sieci po przejsciu aktualnego batcha danych
         # KAMIL przejscie tylko przez komorki LSTM
-        outputs, last_state = legacy_seq2seq.rnn_decoder(inputs, self.initial_state, cell, loop_function=loop if infer else None, scope='rnnlm')
-        output = tf.reshape(tf.concat(outputs, 1), [-1, args.rnn_size])
+        current_state = self.initial_state
+
+        # outputs = []
+        # for input in inputs:
+        #     current_output, current_state = legacy_seq2seq.rnn_decoder([input], current_state, cell, loop_function=test_loop if infer else None, scope='rnnlm')
+        #     outputs.append(current_output)
+
+        # helper for the decoder
+        #helper = tf.contrib.seq2seq.TrainingHelper(inputs, self.target_sequence_length, time_major=True)
+
+        # if helper_type is not None:
+        #     # testing
+        #     if helper_type == 'greedy':
+        #         helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding, start_tokens=tf.fill([args.batch_size], 1), end_token=2)
+        #     maximum_iterations = args.seq_length
+        # else:
+        #     # training
+        #     helper = tf.contrib.seq2seq.TrainingHelper(inputs, [args.seq_length] * args.batch_size, time_major=True)
+        #
+        #     maximum_iterations = None
+
+        # training
+        helper = tf.contrib.seq2seq.TrainingHelper(inputs, [args.seq_length] * args.batch_size, time_major=True)
+
+        maximum_iterations = None
+
+        projection_layer = tf.layers.Dense(args.vocab_size, use_bias=True, name="output_projection")
+
+        # Decoder
+        decoder = tf.contrib.seq2seq.BasicDecoder(
+            cell,
+            helper,
+            current_state,
+            output_layer=projection_layer
+        )
+
+        # Dynamic decoding
+        outputs, current_state, _ = tf.contrib.seq2seq.dynamic_decode(
+            decoder,
+            output_time_major=True,
+            swap_memory=True,
+            maximum_iterations=maximum_iterations,
+            scope='rnnlm')
+
+        #output = tf.reshape(outputs.rnn_output, [-1, args.rnn_size])
+
+        #print(output)
+
         # KAMIL tutaj wyliczenie prawdopodobienstw z ostanitej warstwy pelnych polaczen - softmax
-        self.logits = tf.matmul(output, softmax_w) + softmax_b
+        # self.logits = tf.matmul(outputs.rnn_output, softmax_w) + softmax_b
+        self.logits = outputs.rnn_output
+        self.sample_id = outputs.sample_id
+        print(self.logits)
         self.probs = tf.nn.softmax(self.logits)
         # KAMIL loss ktory jest liczony na podstawie prawdopodobienstw slow, ktore maja wypadac nastepne w sekwencji
-        loss = legacy_seq2seq.sequence_loss_by_example([self.logits],
-                [tf.reshape(self.targets, [-1])],
-                [tf.ones([args.batch_size * args.seq_length])],
-                args.vocab_size)
+        # loss = legacy_seq2seq.sequence_loss_by_example([self.logits],
+        #         [tf.reshape(self.targets, [-1])],
+        #         #[tf.ones([args.batch_size * args.seq_length])],
+        #         [tf.reshape(self.target_weights, [-1])],
+        #         args.vocab_size)
+
+        crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=self.targets, logits=self.logits)
+        loss = (tf.reduce_sum(crossent * self.target_weights) /
+                args.batch_size)
+
+        self.cost = tf.reduce_sum(loss) / args.batch_size
         # KAMIL sredni blad na jedno slowo
-        self.cost = tf.reduce_sum(loss) / args.batch_size / args.seq_length
+        # self.cost = tf.reduce_sum(loss) / args.batch_size / args.seq_length
+
+        # crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        #     labels=self.targets, logits=self.logits)
+        # self.cost = tf.reduce_sum(crossent * self.target_weights) / args.batch_size
+
+
         tf.summary.scalar("cost", self.cost)
-        self.final_state = last_state
+        self.final_state = current_state
         self.lr = tf.Variable(0.0, trainable=False)
         tvars = tf.trainable_variables()
         # KAMIL okreslenie gradientow na podstawie funkcji kosztow i modyfikowalnych zmiennych
