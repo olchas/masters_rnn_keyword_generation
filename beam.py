@@ -3,7 +3,7 @@ import numpy as np
 
 
 class BeamSearch():
-    def __init__(self, predict, initial_state, prime_labels):
+    def __init__(self, predict, initial_state, prime_labels, keywords_ids=None, keywords_count=None):
         """Initializes the beam search.
 
         Args:
@@ -22,12 +22,14 @@ class BeamSearch():
         self.predict = predict
         self.initial_state = initial_state
         self.prime_labels = prime_labels
+        self.keywords_ids = keywords_ids
+        self.keywords_count = keywords_count
 
     def predict_samples(self, samples, states):
         probs = []
         next_states = []
         for i in range(len(samples)):
-            prob, next_state = self.predict(samples[i], states[i])
+            prob, next_state = self.predict(samples[i], states[i], self.keywords_ids, self.keywords_count)
             probs.append(prob.squeeze())
             next_states.append(next_state)
         return np.array(probs), next_states
@@ -55,7 +57,8 @@ class BeamSearch():
             # not yet been determined.
             if i > 0:
                 prime_score = prime_score - np.log(probs[0, label])
-            probs, prime_state = self.predict(prime_sample, prime_state)
+            probs, prime_state = self.predict(prime_sample, prime_state, self.keywords_ids, self.keywords_count)
+            probs = probs[0]
 
         dead_k = 0  # samples that reached eos
         dead_samples = []

@@ -11,9 +11,13 @@ from tensorflow.contrib import legacy_seq2seq
 from beam import BeamSearch
 from utils import clean_str
 
+
 class Model():
     def __init__(self, args, helper_type=None):
         self.args = args
+
+        self.attention_seq_length = args.seq_length
+
         if helper_type is not None:
             args.batch_size = 1
             args.seq_length = 1
@@ -33,7 +37,7 @@ class Model():
             cell = cell_fn(args.rnn_size)
             cells.append(cell)
 
-        self.cell = cell = rnn.MultiRNNCell(cells)
+        self.cell = rnn.MultiRNNCell(cells)
         self.rnn_size = args.rnn_size
         self.num_layers = args.num_layers
 
@@ -45,8 +49,9 @@ class Model():
         # self.target_weights = tf.placeholder(tf.float32, [args.batch_size, args.seq_length])
         self.target_weights = tf.placeholder(tf.float32, [args.seq_length, args.batch_size])
         self.target_sequence_length = tf.placeholder(tf.int32, args.batch_size)
-        # KAMIL to initial_state na poczatku treningu, a nie ten, co jest srednia slow kluczowych (chyba)
-        self.initial_state = cell.zero_state(args.batch_size, tf.float32)
+        # self.attention_states = tf.placeholder(tf.float32, [args.batch_size, self.attention_seq_length, args.rnn_size])
+        self.attention_key_words = tf.placeholder(tf.int32, [args.batch_size, self.attention_seq_length])
+        self.attention_states_count = tf.placeholder(tf.int32, args.batch_size)
         # KAMIL zmienne ktore sie zmieniaja ale nie sa parametrami sieci, wiec nie sa trenowalne
         self.batch_pointer = tf.Variable(0, name="batch_pointer", trainable=False, dtype=tf.int32)
         self.inc_batch_pointer_op = tf.assign(self.batch_pointer, self.batch_pointer + 1)
@@ -90,18 +95,26 @@ class Model():
                                                 shape=[args.vocab_size, args.rnn_size],
                                                 initializer=tf.constant_initializer(pretrained_embedding),
                                                 trainable=train_embedding)
+
+                    if args.key_words_file is not None:
+                        key_words_embedding = tf.get_variable(name="key_words_embedding",
+                                                              shape=[args.vocab_size, args.rnn_size],
+                                                              initializer=tf.constant_initializer(pretrained_embedding),
+                                                              trainable=False)
+
+                        attention_states = tf.nn.embedding_lookup(key_words_embedding, self.attention_key_words)
+
                 else:
                     embedding = tf.get_variable(name="embedding",
                                                 shape=[args.vocab_size, args.rnn_size])
+
                 # KAMIL powiazanie wejscia z embeddingiem
                 # KAMIL funkcja zwraca wiersze z macierzy embedding odpowiadajace indeksom z input data
                 # KAMIL chyba powinno wystarczy zastapienie embedding odpowiednia macierza, mozna tez zostawic zmienna, ale ja zainicjowac gotowymi embedingami
                 inputs = tf.split(tf.nn.embedding_lookup(embedding, self.input_data), args.seq_length, 1)
-                # KAMIL to przeraba na liste kolejnych wartsoci z sekwencji w batchu (pierwsze wartosci, potem drugie itd)
+                # KAMIL to przeraba na liste kolejnych wartosci z sekwencji w batchu (pierwsze wartosci, potem drugie itd)
                 # KAMIL to ponizej usuwa niepotrzebny wymiar 1, zostawiajac liste tensorow o wymiarach: rozmiar batcha, rozmiar embeddingu
                 inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
-
-
 
         self.embedding = embedding
 
@@ -123,7 +136,7 @@ class Model():
         # KAMIL tu podstawowa operacja - dekodowanie, obliczenie wyjsc dla wejsc
         # KAMIL last_state - koncowy stan sieci po przejsciu aktualnego batcha danych
         # KAMIL przejscie tylko przez komorki LSTM
-        current_state = self.initial_state
+
 
         # outputs = []
         # for input in inputs:
@@ -144,6 +157,24 @@ class Model():
         #
         #     maximum_iterations = None
 
+        self.attention_model = False
+
+        if args.key_words_file is not None and args.processed_embeddings is not None:
+
+            self.attention_model = True
+
+            print('Using attention model')
+            self.attention_mechanism = tf.contrib.seq2seq.LuongAttention(
+                args.rnn_size, attention_states,
+                memory_sequence_length=self.attention_states_count)
+
+            self.cell = tf.contrib.seq2seq.AttentionWrapper(
+                self.cell, self.attention_mechanism,
+                attention_layer_size=args.rnn_size)
+
+        self.initial_state = self.cell.zero_state(args.batch_size, tf.float32)
+        current_state = self.initial_state
+
         # training
         helper = tf.contrib.seq2seq.TrainingHelper(inputs, [args.seq_length] * args.batch_size, time_major=True)
 
@@ -153,7 +184,7 @@ class Model():
 
         # Decoder
         decoder = tf.contrib.seq2seq.BasicDecoder(
-            cell,
+            self.cell,
             helper,
             current_state,
             output_layer=projection_layer
@@ -218,7 +249,7 @@ class Model():
             s = np.sum(weights)
             return(int(np.searchsorted(t, np.random.rand(1)*s)))
 
-        def beam_search_predict(sample, state):
+        def beam_search_predict(sample, state, keywords_ids=None, keywords_count=None):
             """Returns the updated probability distribution (`probs`) and
             `state` for a given `sample`. `sample` should be a sequence of
             vocabulary labels, with the last word to be tested against the RNN.
@@ -226,12 +257,15 @@ class Model():
 
             x = np.zeros((1, 1))
             x[0, 0] = sample[-1]
-            feed = {self.input_data: x, self.initial_state: state}
+            if keywords_embedded is not None:
+                feed = {self.input_data: x, self.initial_state: state, self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+            else:
+                feed = {self.input_data: x, self.initial_state: state}
             [probs, final_state] = sess.run([self.probs, self.final_state],
                                             feed)
             return probs, final_state
 
-        def beam_search_pick(prime, width, initial_state, tokens=False, bpe_model_path=None):
+        def beam_search_pick(prime, width, initial_state, tokens=False, keywords_ids=None, keywords_count=None):
             """Returns the beam search pick."""
             if not len(prime) or prime == ' ':
                 prime = random.choice(list(vocab.keys()))
@@ -240,14 +274,18 @@ class Model():
 
             bs = BeamSearch(beam_search_predict,
                             initial_state,
-                            prime_labels)
-            eos = vocab.get('</s>', 0) if bpe_model_path is not None else vocab.get('<\s>', 0) if tokens else None
+                            prime_labels,
+                            keywords_ids,
+                            keywords_count)
+            eos = vocab.get('</s>', 0) if tokens else None
             samples, scores = bs.search(None, eos, k=width, maxsample=num)
             # zwrocenie najlepszej sekwencji
             return samples[np.argmin(scores)]
 
         ret = []
-        # prime = clean_str(prime)
+        prime = clean_str(prime)
+        keywords_ids = None
+        keywords_count = None
 
         if bpe_model_path is not None:
             bpe_model = spm.SentencePieceProcessor()
@@ -258,10 +296,18 @@ class Model():
         # prepare initial state as mean of keyword embeddings
         if keywords:
             keywords_ids = [vocab.get(keyword, 0) for keyword in keywords]
+            # TODO: add reading from original GloVe embeddings
             keywords_embedded = sess.run(self.embedding_lookup(keywords_ids))
             mean_embedding = np.mean(keywords_embedded, axis=0)
             mean_embedding = mean_embedding.reshape(1, mean_embedding.shape[0])
             initial_state = tuple([tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
+
+            if self.attention_model:
+                # TODO add setting the state to mean of keyword embeddings
+                initial_state = sess.run(self.cell.zero_state(1, tf.float32))
+                keywords_ids = [keywords_ids + [0] * (self.attention_seq_length - len(keywords))]
+                # keywords_embedded = np.expand_dims(np.concatenate((keywords_embedded, [[0] * self.rnn_size] * (self.attention_seq_length - len(keywords)))), axis=0)
+                keywords_count = [len(keywords)]
         else:
             initial_state = sess.run(self.cell.zero_state(1, tf.float32))
         if tokens and not prime.startswith('<s>'):
@@ -279,7 +325,10 @@ class Model():
                 x = np.zeros((1, 1))
                 # KAMIL tu sa feedowane primewordy i zmieniany jest w ten sposob tylko stan
                 x[0, 0] = vocab.get(word, 0)
-                feed = {self.input_data: x, self.initial_state:state}
+                if self.attention_model:
+                    feed = {self.input_data: x, self.initial_state: state, self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+                else:
+                    feed = {self.input_data: x, self.initial_state:state}
                 [state] = sess.run([self.final_state], feed)
 
             ret = prime.split()
@@ -289,7 +338,10 @@ class Model():
             for n in range(num):
                 x = np.zeros((1, 1))
                 x[0, 0] = vocab.get(word, 0)
-                feed = {self.input_data: x, self.initial_state:state}
+                if self.attention_model:
+                    feed = {self.input_data: x, self.initial_state: state, self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+                else:
+                    feed = {self.input_data: x, self.initial_state:state}
                 [probs, state] = sess.run([self.probs, self.final_state], feed)
                 p = probs[0]
                 # KAMIL rozne sposoby wyboru nastepnego slowa
@@ -304,13 +356,13 @@ class Model():
                     sample = weighted_pick(p)
                 # KAMIL sample to pewnie indeks
                 word = words[sample]
-                if tokens and (word == '<\s>' or word == '</s>'):
+                if tokens and word == '</s>':
                     break
                 ret += [word]
         elif pick == 2:
-            pred = beam_search_pick(prime, width, initial_state, tokens, bpe_model_path)
+            pred = beam_search_pick(prime, width, initial_state, tokens, keywords_ids, keywords_count)
             for i, label in enumerate(pred):
                 ret += [words[label] if i > 0 else words[label]]
         print (ret)
-        ret = bpe_model.DecodePieces(ret) if bpe_model_path is not None else " ".join(ret[1:-3]).strip('<s> ').strip(' <\s')
+        ret = bpe_model.DecodePieces(ret) if bpe_model_path is not None else " ".join(ret).strip('<s> ').strip(' </s>')
         return ret

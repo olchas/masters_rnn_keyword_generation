@@ -20,6 +20,12 @@ def main():
                        help='directory containing tensorboard logs')
     parser.add_argument('--save_dir', type=str, default='save',
                        help='directory to store checkpointed models')
+    parser.add_argument('--key_words_file', type=str, default=None,
+                       help='file with key words extracted from input.txt to be used in attention mechanism;'
+                            'if other than None, pretrained_embeddings must be provided as well')
+    parser.add_argument('--pos_tags', type=str, nargs='+',
+                        default=['_JJ', '_NN', '_NNP', '_NNPS', '_NNS', '_RB', '_VB', '_VBD', '_VBG', '_VBN', '_VBP', '_VBZ'],
+                        help='list of pos tags that should be used as keywords')
     parser.add_argument('--rnn_size', type=int, default=200,
                        help='size of RNN hidden state')
     parser.add_argument('--num_layers', type=int, default=2,
@@ -72,7 +78,7 @@ def main():
 
 def train(args):
     data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.vocab_size, args.use_bpe, args.bpe_size, args.bpe_model_path,
-                             args.pretrained_embeddings, args.input_encoding)
+                             args.pretrained_embeddings, args.key_words_file, args.pos_tags, args.input_encoding)
     args.vocab_size = data_loader.vocab_size
 
     if args.pretrained_embeddings is not None:
@@ -145,12 +151,16 @@ def train(args):
             # KAMIL dla kazdego batcha, czym sa x i y, czyli dane wejsciowe i target? czy u mnie to beda keywordy i zdania?
             for b in range(data_loader.pointer, data_loader.num_batches):
                 start = time.time()
-                x, y, target_weights = data_loader.next_batch()
+                x, y, target_weights, key_words, key_words_count = data_loader.next_batch()
 
                 target_sequence_length = np.sum(target_weights, axis=0)
 
-                feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights, model.target_sequence_length: target_sequence_length, model.initial_state: state,
-                        model.batch_time: speed}
+                if key_words is not None:
+                    feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights, model.target_sequence_length: target_sequence_length, model.initial_state: state,
+                            model.batch_time: speed, model.attention_key_words: key_words, model.attention_states_count: key_words_count}
+                else:
+                    feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights, model.target_sequence_length: target_sequence_length, model.initial_state: state,
+                            model.batch_time: speed}
                 # KAMIL sess.run chyba sie podawalo parametry do zmiany i dane do treningu - feed
                 # KAMIL model.train_op - optimizer do minimalizacji model.cost, model.final_state - stan sieci po tym batchu danych, jest poczatkowym stanem w nastepnym kroku?
                 # KAMIL merged - zbior zmiennych sieci modyfikowalnych? takie wartosci jak max, min, mean macierzy W i wektora b
