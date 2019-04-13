@@ -28,6 +28,9 @@ def main():
                         help='list of pos tags that should be used as keywords')
     parser.add_argument('--rnn_size', type=int, default=200,
                        help='size of RNN hidden state')
+    parser.add_argument('--embedding_size', type=int, default=None,
+                       help='optional size of embedding; if None, rnn_size will be used;'
+                            'if you specify pretrained embeddings this argument is ignored')
     parser.add_argument('--num_layers', type=int, default=2,
                        help='number of layers in the RNN')
     parser.add_argument('--model', type=str, default='lstm',
@@ -108,8 +111,6 @@ def train(args):
         with open(os.path.join(args.init_from, 'words_vocab.pkl'), 'rb') as f:
             saved_words, saved_vocab = cPickle.load(f)
 
-        #print(data_loader.words)
-
         assert saved_words==data_loader.words, "Data and loaded model disagree on word set!"
         assert saved_vocab==data_loader.vocab, "Data and loaded model disagree on dictionary mappings!"
 
@@ -139,8 +140,10 @@ def train(args):
             # KAMIL data loader laduje dane
             # KAMIL w kazdej epoce caly zbior danych jest analizowany?
             data_loader.reset_batch_pointer()
+            # KAMIL czy to sprawia, ze po kazdej epoce jest zerowy stan?
             state = sess.run(model.initial_state)
             speed = 0
+            epoch_error = 0
             if args.init_from is None:
                 assign_op = model.epoch_pointer.assign(e)
                 sess.run(assign_op)
@@ -157,16 +160,19 @@ def train(args):
 
                 if key_words is not None:
                     feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights, model.target_sequence_length: target_sequence_length, model.initial_state: state,
-                            model.batch_time: speed, model.attention_key_words: key_words, model.attention_states_count: key_words_count}
+                            model.batch_time: speed, model.attention_key_words: key_words, model.attention_states_count: key_words_count, model.target_sequence_length: target_sequence_length}
                 else:
                     feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights, model.target_sequence_length: target_sequence_length, model.initial_state: state,
-                            model.batch_time: speed}
+                            model.batch_time: speed, model.target_sequence_length: target_sequence_length}
                 # KAMIL sess.run chyba sie podawalo parametry do zmiany i dane do treningu - feed
                 # KAMIL model.train_op - optimizer do minimalizacji model.cost, model.final_state - stan sieci po tym batchu danych, jest poczatkowym stanem w nastepnym kroku?
+                # KAMIL po co w sumie zachowywac stan do nastepnego batcha?
                 # KAMIL merged - zbior zmiennych sieci modyfikowalnych? takie wartosci jak max, min, mean macierzy W i wektora b
                 # KAMIL sess.run zwraca koncowe postaci tych wartosci po zakonczeniu obliczen
                 summary, train_loss, state, _, _ = sess.run([merged, model.cost, model.final_state,
                                                              model.train_op, model.inc_batch_pointer_op], feed)
+                # KAMIL train loss mozna akumulowac, zeby sobie zachowac loss po kazdej epoce
+                epoch_error += train_loss
                 # KAMIL zapis logu?
                 train_writer.add_summary(summary, e * data_loader.num_batches + b)
                 speed = time.time() - start
@@ -182,6 +188,7 @@ def train(args):
                     checkpoint_path = os.path.join(args.save_dir, 'model.ckpt')
                     saver.save(sess, checkpoint_path, global_step = e * data_loader.num_batches + b)
                     print("model saved to {}".format(checkpoint_path))
+            print("mean epoch error is {}".format(epoch_error / data_loader.num_batches))
         train_writer.close()
 
 

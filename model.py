@@ -43,13 +43,13 @@ class Model():
 
         # KAMIL placeholdery sluza do ladowania danych treningowych
         # KAMIL potrzebny placeholder na slowa kluczowe do atencji
-        self.input_data = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
+        # self.input_data = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
+        self.input_data = tf.placeholder(tf.int32, [args.seq_length, args.batch_size])
         # self.targets = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
         self.targets = tf.placeholder(tf.int32, [args.seq_length, args.batch_size])
         # self.target_weights = tf.placeholder(tf.float32, [args.batch_size, args.seq_length])
         self.target_weights = tf.placeholder(tf.float32, [args.seq_length, args.batch_size])
         self.target_sequence_length = tf.placeholder(tf.int32, args.batch_size)
-        # self.attention_states = tf.placeholder(tf.float32, [args.batch_size, self.attention_seq_length, args.rnn_size])
         self.attention_key_words = tf.placeholder(tf.int32, [args.batch_size, self.attention_seq_length])
         self.attention_states_count = tf.placeholder(tf.int32, args.batch_size)
         # KAMIL zmienne ktore sie zmieniaja ale nie sa parametrami sieci, wiec nie sa trenowalne
@@ -77,7 +77,7 @@ class Model():
         with tf.variable_scope('rnnlm'):
             # KAMIL te zmienne chyba trzeba zainicjowac wartosciami nauczonymi w celu uzyskania poprawnego syntaxu na 'zwyklych danych' (bez atencji)
             # KAMIL to chyba moze byc tylko ostatnia warstwa - output layer
-            # softmax_w = tf.get_variable("softmax_w", [args.rnn_size, args.vocab_size])
+            # softmax_w = tf.get_variable("softmax_w", [self.rnn_size, args.vocab_size])
             # variable_summaries(softmax_w)
             # softmax_b = tf.get_variable("softmax_b", [args.vocab_size])
             # variable_summaries(softmax_b)
@@ -90,33 +90,48 @@ class Model():
                     with open(args.processed_embeddings, 'rb') as f:
                         pretrained_embedding = cPickle.load(f)
 
+                    self.embedding_size = pretrained_embedding.shape[1]
+
                     train_embedding = not args.dont_train_embeddings
-                    embedding = tf.get_variable(name="embedding",
-                                                shape=[args.vocab_size, args.rnn_size],
-                                                initializer=tf.constant_initializer(pretrained_embedding),
-                                                trainable=train_embedding)
+                    self.embedding = tf.get_variable(name="embedding",
+                                                     shape=[args.vocab_size, self.embedding_size],
+                                                     initializer=tf.constant_initializer(pretrained_embedding),
+                                                     trainable=train_embedding)
 
                     if args.key_words_file is not None:
                         key_words_embedding = tf.get_variable(name="key_words_embedding",
-                                                              shape=[args.vocab_size, args.rnn_size],
+                                                              shape=[args.vocab_size, self.embedding_size],
                                                               initializer=tf.constant_initializer(pretrained_embedding),
                                                               trainable=False)
 
                         attention_states = tf.nn.embedding_lookup(key_words_embedding, self.attention_key_words)
 
                 else:
-                    embedding = tf.get_variable(name="embedding",
-                                                shape=[args.vocab_size, args.rnn_size])
+                    self.embedding_size = args.embedding_size if args.embedding_size is not None else self.rnn_size
+
+                    self.embedding = tf.get_variable(name="embedding",
+                                                     shape=[args.vocab_size, self.embedding_size])
 
                 # KAMIL powiazanie wejscia z embeddingiem
                 # KAMIL funkcja zwraca wiersze z macierzy embedding odpowiadajace indeksom z input data
                 # KAMIL chyba powinno wystarczy zastapienie embedding odpowiednia macierza, mozna tez zostawic zmienna, ale ja zainicjowac gotowymi embedingami
-                inputs = tf.split(tf.nn.embedding_lookup(embedding, self.input_data), args.seq_length, 1)
+                # inputs = tf.split(tf.nn.embedding_lookup(self.embedding, self.input_data), args.seq_length, 1)
+                inputs = tf.nn.embedding_lookup(self.embedding, self.input_data)
                 # KAMIL to przeraba na liste kolejnych wartosci z sekwencji w batchu (pierwsze wartosci, potem drugie itd)
                 # KAMIL to ponizej usuwa niepotrzebny wymiar 1, zostawiajac liste tensorow o wymiarach: rozmiar batcha, rozmiar embeddingu
-                inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
+                # inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
 
-        self.embedding = embedding
+            # if embedding_size is different from layer size then prepare a dense layer for recalculation
+            if self.embedding_size != self.rnn_size:
+
+                self.embedding_w = tf.get_variable("embedding_w", [self.embedding_size, self.rnn_size])
+                variable_summaries(self.embedding_w)
+                self.embedding_b = tf.get_variable("embedding_b", [self.rnn_size])
+                variable_summaries(self.embedding_b)
+
+                inputs = tf.add(tf.tensordot(inputs, self.embedding_w, axes=[[2], [0]]), self.embedding_b)
+
+        # self.attention_states = tf.placeholder(tf.float32, [args.batch_size, self.attention_seq_length, self.embedding_size])
 
         # KAMIL tutaj obliczenie wyjscia z sieci dla wejscia
         # KAMIL tu chyba trzeba dodac attention - w trakcie testow
@@ -126,7 +141,7 @@ class Model():
         # def test_loop(prev, _):
         #     prev = tf.matmul(prev, softmax_w) + softmax_b
         #     prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
-        #     return tf.nn.embedding_lookup(embedding, prev_symbol)
+        #     return tf.nn.embedding_lookup(self.embedding, prev_symbol)
 
         # def train_loop(prev, i):
         #     state =
@@ -149,7 +164,7 @@ class Model():
         # if helper_type is not None:
         #     # testing
         #     if helper_type == 'greedy':
-        #         helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding, start_tokens=tf.fill([args.batch_size], 1), end_token=2)
+        #         helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(self.embedding, start_tokens=tf.fill([args.batch_size], 1), end_token=2)
         #     maximum_iterations = args.seq_length
         # else:
         #     # training
@@ -165,18 +180,20 @@ class Model():
 
             print('Using attention model')
             self.attention_mechanism = tf.contrib.seq2seq.LuongAttention(
-                args.rnn_size, attention_states,
+                self.rnn_size, attention_states,
                 memory_sequence_length=self.attention_states_count)
 
             self.cell = tf.contrib.seq2seq.AttentionWrapper(
                 self.cell, self.attention_mechanism,
-                attention_layer_size=args.rnn_size)
+                attention_layer_size=self.rnn_size)
 
         self.initial_state = self.cell.zero_state(args.batch_size, tf.float32)
         current_state = self.initial_state
 
         # training
-        helper = tf.contrib.seq2seq.TrainingHelper(inputs, [args.seq_length] * args.batch_size, time_major=True)
+        # helper = tf.contrib.seq2seq.TrainingHelper(inputs, [args.seq_length] * args.batch_size, time_major=True)
+
+        helper = tf.contrib.seq2seq.TrainingHelper(inputs, self.target_sequence_length, time_major=True)
 
         maximum_iterations = None
 
@@ -198,9 +215,11 @@ class Model():
             maximum_iterations=maximum_iterations,
             scope='rnnlm')
 
-        #output = tf.reshape(outputs.rnn_output, [-1, args.rnn_size])
+        #output = tf.reshape(outputs.rnn_output, [-1, self.rnn_size])
 
         #print(output)
+
+        self.final_state = current_state
 
         # KAMIL tutaj wyliczenie prawdopodobienstw z ostanitej warstwy pelnych polaczen - softmax
         # self.logits = tf.matmul(outputs.rnn_output, softmax_w) + softmax_b
@@ -215,12 +234,16 @@ class Model():
         #         [tf.reshape(self.target_weights, [-1])],
         #         args.vocab_size)
 
-        crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
-            labels=self.targets, logits=self.logits)
-        loss = (tf.reduce_sum(crossent * self.target_weights) /
-                args.batch_size)
+        # cut targets matrix according to longest target sequence
 
-        self.cost = tf.reduce_sum(loss) / args.batch_size
+        labels = tf.slice(self.targets, [0, 0], [tf.keras.backend.max(self.target_sequence_length), args.batch_size])
+
+        target_weigths_cut = tf.slice( self.target_weights, [0, 0], [tf.keras.backend.max(self.target_sequence_length), args.batch_size])
+
+        crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=labels, logits=self.logits)
+        self.cost = tf.reduce_sum(crossent * target_weigths_cut) / args.batch_size
+
         # KAMIL sredni blad na jedno slowo
         # self.cost = tf.reduce_sum(loss) / args.batch_size / args.seq_length
 
@@ -228,9 +251,8 @@ class Model():
         #     labels=self.targets, logits=self.logits)
         # self.cost = tf.reduce_sum(crossent * self.target_weights) / args.batch_size
 
-
         tf.summary.scalar("cost", self.cost)
-        self.final_state = current_state
+
         self.lr = tf.Variable(0.0, trainable=False)
         tvars = tf.trainable_variables()
         # KAMIL okreslenie gradientow na podstawie funkcji kosztow i modyfikowalnych zmiennych
@@ -241,7 +263,10 @@ class Model():
         self.train_op = optimizer.apply_gradients(zip(grads, tvars))
 
     def embedding_lookup(self, words):
-        return tf.nn.embedding_lookup(self.embedding, words)
+        if self.embedding_size == self.rnn_size:
+            return tf.nn.embedding_lookup(self.embedding, words)
+        else:
+            return tf.matmul(tf.nn.embedding_lookup(self.embedding, words), self.embedding_w) + self.embedding_b
 
     def sample(self, sess, words, vocab, num=50, prime='first all', sampling_type=1, pick=0, width=4, quiet=False, bpe_model_path=None, tokens=False, keywords=[]):
         def weighted_pick(weights):
@@ -257,10 +282,10 @@ class Model():
 
             x = np.zeros((1, 1))
             x[0, 0] = sample[-1]
-            if keywords_embedded is not None:
-                feed = {self.input_data: x, self.initial_state: state, self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+            if keywords_count is not None:
+                feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
             else:
-                feed = {self.input_data: x, self.initial_state: state}
+                feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1]}
             [probs, final_state] = sess.run([self.probs, self.final_state],
                                             feed)
             return probs, final_state
@@ -296,18 +321,26 @@ class Model():
         # prepare initial state as mean of keyword embeddings
         if keywords:
             keywords_ids = [vocab.get(keyword, 0) for keyword in keywords]
-            # TODO: add reading from original GloVe embeddings
+            # TODO: add reading from original GloVe embeddings (needed especially for bpe models)
             keywords_embedded = sess.run(self.embedding_lookup(keywords_ids))
             mean_embedding = np.mean(keywords_embedded, axis=0)
             mean_embedding = mean_embedding.reshape(1, mean_embedding.shape[0])
-            initial_state = tuple([tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
 
             if self.attention_model:
-                # TODO add setting the state to mean of keyword embeddings
-                initial_state = sess.run(self.cell.zero_state(1, tf.float32))
+                mean_embedding = tf.convert_to_tensor(mean_embedding, dtype=tf.float32)
+                lstm_cells_state = tuple(
+                    [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
                 keywords_ids = [keywords_ids + [0] * (self.attention_seq_length - len(keywords))]
-                # keywords_embedded = np.expand_dims(np.concatenate((keywords_embedded, [[0] * self.rnn_size] * (self.attention_seq_length - len(keywords)))), axis=0)
                 keywords_count = [len(keywords)]
+                # keywords_embedded = np.expand_dims(np.concatenate((keywords_embedded, [[0] * self.embedding_size] * (self.attention_seq_length - len(keywords)))), axis=0)
+                # initial_state = sess.run(self.cell.zero_state(1, tf.float32))
+
+                # TODO decide whether state of attention cells should be initiated as well
+                initial_state = sess.run(self.cell.zero_state(1, tf.float32).clone(cell_state=lstm_cells_state))
+            else:
+
+                initial_state = tuple(
+                    [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
         else:
             initial_state = sess.run(self.cell.zero_state(1, tf.float32))
         if tokens and not prime.startswith('<s>'):
@@ -326,9 +359,9 @@ class Model():
                 # KAMIL tu sa feedowane primewordy i zmieniany jest w ten sposob tylko stan
                 x[0, 0] = vocab.get(word, 0)
                 if self.attention_model:
-                    feed = {self.input_data: x, self.initial_state: state, self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+                    feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
                 else:
-                    feed = {self.input_data: x, self.initial_state:state}
+                    feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1]}
                 [state] = sess.run([self.final_state], feed)
 
             ret = prime.split()
@@ -339,9 +372,9 @@ class Model():
                 x = np.zeros((1, 1))
                 x[0, 0] = vocab.get(word, 0)
                 if self.attention_model:
-                    feed = {self.input_data: x, self.initial_state: state, self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+                    feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
                 else:
-                    feed = {self.input_data: x, self.initial_state:state}
+                    feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1]}
                 [probs, state] = sess.run([self.probs, self.final_state], feed)
                 p = probs[0]
                 # KAMIL rozne sposoby wyboru nastepnego slowa
