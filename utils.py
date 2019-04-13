@@ -211,6 +211,9 @@ class TextLoader():
         np.save(os.path.join(key_words_dir, key_words_filename), self.key_words)
         np.save(os.path.join(key_words_dir, 'key_words_count.npy'), self.key_words_count)
 
+        # sort data by length of training sentences so that batches contain sentences within similar range
+        data = data.reindex(data[0].map(len).sort_values().index)
+
         return list(data[0])
 
     def preprocess(self, input_file, vocab_file, vocab_size, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings, key_words_file, pos_tags, encoding):
@@ -263,17 +266,25 @@ class TextLoader():
         with open(vocab_file, 'wb') as f:
             cPickle.dump(self.words, f)
 
+        self.key_words = None
+        self.key_words_count = None
+        self.key_words_batches = None
+        self.key_words_count_batches = None
+        self.key_words_vocab_size = None
+
         if pretrained_embeddings is not None:
             self.prepare_embedding_matrix(pretrained_embeddings)
 
             if 'key_words' in data:
                 return self.prepare_keywords_embedding_matrix(data, key_words_file, pos_tags)
+
+            else:
+                # sort data by length of training sentences so that batches contain sentences within similar range
+                data = data.reindex(data[0].map(len).sort_values().index)
+
         else:
-            self.key_words = None
-            self.key_words_count = None
-            self.key_words_batches = None
-            self.key_words_count_batches = None
-            self.key_words_vocab_size = None
+
+            data = data.reindex(data[0].map(len).sort_values().index)
 
         return list(data[0])
 
@@ -320,7 +331,8 @@ class TextLoader():
         # KAMIL reshape zmienia array na macierz batch_size wierszy
         # KAMIL split powoduje, ze otrzymujesz liste num_batches arrayow o wymiarach batch_size x seq_length
         # KAMIL czyli kazdy batch to batch_size sekwencji seq_length wyrazow (nie kolejnych sekwencji)
-        self.x_batches = np.split(self.tensor, self.num_batches)
+        # self.x_batches = np.split(self.tensor, self.num_batches)
+        self.x_batches = [x_batch.transpose() for x_batch in np.split(self.tensor, self.num_batches)]
         self.y_batches = [y_batch.transpose() for y_batch in np.split(self.target_tensor, self.num_batches)]
         self.target_weights_batches = [target_weights_batch.transpose() for target_weights_batch in np.split(self.target_weights, self.num_batches)]
 
@@ -331,11 +343,13 @@ class TextLoader():
             self.key_words_count_batches = np.split(self.key_words_count, self.num_batches)
 
     def next_batch(self):
-        x, y, target_weights = self.x_batches[self.pointer], self.y_batches[self.pointer], self.target_weights_batches[self.pointer]
-        key_words = self.key_words_batches[self.pointer] if self.key_words_batches is not None else None
-        key_words_count = self.key_words_count_batches[self.pointer] if self.key_words_count_batches is not None else None
+        batch_index = self.batch_order[self.pointer]
+        x, y, target_weights = self.x_batches[batch_index], self.y_batches[batch_index], self.target_weights_batches[batch_index]
+        key_words = self.key_words_batches[batch_index] if self.key_words_batches is not None else None
+        key_words_count = self.key_words_count_batches[batch_index] if self.key_words_count_batches is not None else None
         self.pointer += 1
         return x, y, target_weights, key_words, key_words_count
 
     def reset_batch_pointer(self):
         self.pointer = 0
+        self.batch_order = np.random.permutation(self.num_batches)
