@@ -35,6 +35,8 @@ class Model():
         for _ in range(args.num_layers):
             # KAMIL rozmiar hidden layer
             cell = cell_fn(args.rnn_size)
+            if args.dropout_prob > 0:
+               cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=max(0, 1 - args.dropout_prob))
             cells.append(cell)
 
         self.cell = rnn.MultiRNNCell(cells)
@@ -53,11 +55,9 @@ class Model():
         self.attention_key_words = tf.placeholder(tf.int32, [args.batch_size, self.attention_seq_length])
         self.attention_states_count = tf.placeholder(tf.int32, args.batch_size)
         # KAMIL zmienne ktore sie zmieniaja ale nie sa parametrami sieci, wiec nie sa trenowalne
-        self.batch_pointer = tf.Variable(0, name="batch_pointer", trainable=False, dtype=tf.int32)
-        self.inc_batch_pointer_op = tf.assign(self.batch_pointer, self.batch_pointer + 1)
-        self.epoch_pointer = tf.Variable(0, name="epoch_pointer", trainable=False)
-        self.batch_time = tf.Variable(0.0, name="batch_time", trainable=False)
-        tf.summary.scalar("time_batch", self.batch_time)
+        self.best_val_epoch = tf.Variable(0, name="best_val_epoch", trainable=False, dtype=tf.int32)
+        self.best_val_error = tf.Variable(0.0, name="best_val_error", trainable=False, dtype=tf.float32)
+        self.epoch_pointer = tf.Variable(0, name="epoch_pointer", trainable=False, dtype=tf.int32)
 
         def variable_summaries(var):
             """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
@@ -98,7 +98,7 @@ class Model():
                                                      initializer=tf.constant_initializer(pretrained_embedding),
                                                      trainable=train_embedding)
 
-                    if args.key_words_file is not None:
+                    if args.use_attention:
                         key_words_embedding = tf.get_variable(name="key_words_embedding",
                                                               shape=[args.vocab_size, self.embedding_size],
                                                               initializer=tf.constant_initializer(pretrained_embedding),
@@ -174,7 +174,7 @@ class Model():
 
         self.attention_model = False
 
-        if args.key_words_file is not None and args.processed_embeddings is not None:
+        if args.use_attention and args.processed_embeddings is not None:
 
             self.attention_model = True
 
@@ -238,7 +238,7 @@ class Model():
 
         labels = tf.slice(self.targets, [0, 0], [tf.keras.backend.max(self.target_sequence_length), args.batch_size])
 
-        target_weigths_cut = tf.slice( self.target_weights, [0, 0], [tf.keras.backend.max(self.target_sequence_length), args.batch_size])
+        target_weigths_cut = tf.slice(self.target_weights, [0, 0], [tf.keras.backend.max(self.target_sequence_length), args.batch_size])
 
         crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
             labels=labels, logits=self.logits)
@@ -343,6 +343,9 @@ class Model():
                     [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
         else:
             initial_state = sess.run(self.cell.zero_state(1, tf.float32))
+            if self.attention_model:
+                keywords_count = [1]
+                keywords_ids = [[0] * self.attention_seq_length]
         if tokens and not prime.startswith('<s>'):
             prime = '<s> ' + prime
         if not quiet:
@@ -397,5 +400,5 @@ class Model():
             for i, label in enumerate(pred):
                 ret += [words[label] if i > 0 else words[label]]
         print (ret)
-        ret = bpe_model.DecodePieces(ret) if bpe_model_path is not None else " ".join(ret).strip('<s> ').strip(' </s>')
+        ret = bpe_model.DecodePieces(ret) if bpe_model_path is not None else " ".join(ret).replace('<s> ', '').replace(' </s>', '')
         return ret
