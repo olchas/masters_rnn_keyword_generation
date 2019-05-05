@@ -12,6 +12,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--save_dir', type=str, default='save',
                         help='model directory to load stored checkpointed models from')
+    parser.add_argument('--model_checkpoint', type=str, default=None,
+                        help='optional path to checkpointed model')
     parser.add_argument('-n', type=int, default=50,
                         help='number of words to sample')
     parser.add_argument('--prime', type=str, default=' ',
@@ -55,12 +57,17 @@ def sample(args):
     with tf.Session() as sess:
         tf.global_variables_initializer().run()
         saver = tf.train.Saver(tf.global_variables())
-        ckpt = tf.train.get_checkpoint_state(args.save_dir)
-        if ckpt and ckpt.model_checkpoint_path:
-            saver.restore(sess, ckpt.model_checkpoint_path)
-            for _ in range(args.count):
-                print(model.sample(sess, words, vocab, args.n, args.prime, args.sample, args.pick, args.width,
-                                   args.quiet, args.bpe_model_path, args.tokens, args.keywords))
+
+        if args.model_checkpoint is not None:
+            model_checkpoint_path = args.model_checkpoint
+        else:
+            ckpt = tf.train.get_checkpoint_state(args.save_dir)
+            model_checkpoint_path = ckpt.model_checkpoint_path
+
+        saver.restore(sess, model_checkpoint_path)
+        for _ in range(args.count):
+            print(model.sample(sess, words, vocab, args.n, args.prime, args.sample, args.pick, args.width,
+                               args.quiet, args.bpe_model_path, args.tokens, args.keywords))
 
 
 if __name__ == '__main__':
