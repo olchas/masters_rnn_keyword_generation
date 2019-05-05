@@ -13,6 +13,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_dir', '-i', type=str, default='save',
                         help='model directory to load stored checkpointed models from')
+    parser.add_argument('--model_checkpoint', type=str, default=None,
+                        help='optional path to checkpointed model')
     parser.add_argument('--test_file', '-t', type=str,
                         help='path do file with test sentences')
     parser.add_argument('--output_dir', '-o', type=str, default='evaluation',
@@ -56,6 +58,7 @@ def evaluate(args):
     with open(os.path.join(args.input_dir, 'words_vocab.pkl'), 'rb') as f:
         words, vocab = cPickle.load(f)
 
+
     with open(args.test_file) as f:
         test_utterances = f.read().strip().split('\n')
     maximal_length = max(map(lambda x: len(x), test_utterances))
@@ -70,28 +73,37 @@ def evaluate(args):
     else:
         keywords = [[]] * len(test_utterances)
 
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+
+    generated_utterances_file = open(os.path.join(args.output_dir, 'generated_utterances.txt'), 'w')
+
     generated_utterances = []
     model = Model(saved_args, True)
     with tf.Session() as sess:
         tf.global_variables_initializer().run()
         saver = tf.train.Saver(tf.global_variables())
-        ckpt = tf.train.get_checkpoint_state(args.input_dir)
-        if ckpt and ckpt.model_checkpoint_path:
-            saver.restore(sess, ckpt.model_checkpoint_path)
-            for i, test_utterance in enumerate(test_utterances):
-                prime = ' '.join(test_utterance.split()[:args.prime])
-                utterance_keywords = keywords[i]
-                print(test_utterance, prime, keywords[i])
+        if args.model_checkpoint is not None:
+            model_checkpoint_path = args.model_checkpoint
+        else:
+            ckpt = tf.train.get_checkpoint_state(args.save_dir)
+            model_checkpoint_path = ckpt.model_checkpoint_path
 
-                generated_utterances.append(model.sample(sess, words, vocab, maximal_length, prime, args.sample,
-                                                         args.pick, args.width, args.quiet, args.bpe_model_path,
-                                                         args.tokens, utterance_keywords))
+        saver.restore(sess, model_checkpoint_path)
+        for i, test_utterance in enumerate(test_utterances):
+            prime = ' '.join(test_utterance.split()[:args.prime])
+            utterance_keywords = keywords[i]
+            print(test_utterance, prime, keywords[i])
 
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
+            generated_utterance = model.sample(sess, words, vocab, maximal_length, prime, args.sample,
+                                               args.pick, args.width, args.quiet, args.bpe_model_path,
+                                               args.tokens, utterance_keywords)
 
-    with open(os.path.join(args.output_dir, 'generated_utterances.txt'), 'w') as f:
-        f.write('\n'.join(generated_utterances) + '\n')
+            generated_utterances.append(generated_utterance)
+
+            generated_utterances_file.write(generated_utterance + '\n')
+
+    generated_utterances_file.close()
 
     with open(os.path.join(args.output_dir, 'generated_utterances_stripped.txt'), 'w') as f:
         f.write('\n'.join(map(lambda x: ' '.join(x.split()[args.prime:]), generated_utterances)) + '\n')
@@ -104,7 +116,7 @@ def evaluate(args):
                                             no_skipthoughts=True,
                                             no_glove=True)
 
-    metrics_dict = compute_metrics(hypothesis=os.path.join(args.output_dir, 'generated_utterances.txt'),
+    metrics_dict = compute_metrics(hypothesis=generated_utterances_file,
                                    references=[args.test_file],
                                    no_skipthoughts=True)
 
