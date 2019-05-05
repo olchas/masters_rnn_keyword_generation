@@ -6,11 +6,11 @@ import itertools
 import os
 import re
 from functools import reduce
+from six.moves import cPickle
 
 import numpy as np
 import pandas as pd
 import sentencepiece as spm
-from six.moves import cPickle
 
 
 def clean_str(string):
@@ -18,6 +18,8 @@ def clean_str(string):
     Tokenization/string cleaning for all datasets except for SST.
     Original taken from https://github.com/yoonkim/CNN_sentence/blob/master/process_data
     """
+    if not isinstance(string, str):
+        string = str(string)
     string = string.lower()
     string = re.sub(r"[^a-z0-9\-,!?\'/]", " ", string)
     # remove duplicates of any punctuation, separate certain punctuation from words
@@ -31,9 +33,11 @@ def clean_str(string):
     string = re.sub(r"([^\w]|^)-", r"\1", string)
     # remove any dashes at the end of string or not preceding a letter
     string = re.sub(r"-([^\w]|$)", r"\1", string)
+    # separate short forms from modal verbs
     string = re.sub(r"\'s", " \'s", string)
+    string = re.sub(r"\'m", " \'m", string)
     string = re.sub(r"\'ve", " \'ve", string)
-    string = re.sub(r"\'t", " \'t", string)
+    string = re.sub(r"n\'t", " n\'t", string)
     string = re.sub(r"\'re", " \'re", string)
     string = re.sub(r"\'d", " \'d", string)
     string = re.sub(r"\'ll", " \'ll", string)
@@ -43,7 +47,7 @@ def clean_str(string):
 
 
 class TextLoader():
-    def __init__(self, data_dir, batch_size, seq_length, vocab_size, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings=None, key_words_file=None, pos_tags=[], encoding=None):
+    def __init__(self, data_dir, batch_size, seq_length, vocab_size, unk_max_number, unk_max_count, vocabulary, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings=None, use_attention=False, pos_tags=[], encoding=None):
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.seq_length = seq_length
@@ -54,18 +58,23 @@ class TextLoader():
         target_tensor_file = os.path.join(data_dir, "target_data.npy")
         weights_file = os.path.join(data_dir, "weights.npy")
 
+        key_words_file = os.path.join(data_dir, "input_tagged.txt") if use_attention else None
+
         # Let's not read voca and data from file. We many change them.
         if True or not (os.path.exists(vocab_file) and os.path.exists(tensor_file)):
             print("reading text file")
-            sentences = self.preprocess(input_file, vocab_file, vocab_size, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings, key_words_file, pos_tags, encoding)
-            self.prepare_tensors(sentences, tensor_file, target_tensor_file, weights_file, use_bpe)
+            sentences = self.preprocess(input_file, vocab_file, vocab_size, unk_max_number, unk_max_count, vocabulary, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings, key_words_file, pos_tags, encoding)
+            self.prepare_tensors(sentences, tensor_file, target_tensor_file, weights_file)
 
         else:
             print("loading preprocessed files")
         self.create_batches()
         self.reset_batch_pointer()
 
-    def build_vocab(self, sentences, vocab_size, bpe_model, add_eos_tokens=True):
+    def count_unks(self, sentence):
+        return sentence.count(self.unk_token)
+
+    def build_vocab(self, sentences, vocab_size, bpe_model):
         """
         Builds a vocabulary mapping from word to index based on the sentences.
         Returns vocabulary mapping and inverse vocabulary mapping.
@@ -78,11 +87,8 @@ class TextLoader():
             word_counts = collections.Counter([word for sentence in sentences for word in sentence])
 
             # Mapping from index to word
-            if add_eos_tokens:
-                vocabulary_inv = ['<unk>', '<s>', '</s>'] \
-                    if vocab_size is not None and vocab_size < len(word_counts.items()) + 2 else ['<s>', '</s>']
-            else:
-                vocabulary_inv = ['<unk>']
+            vocabulary_inv = ['<unk>', '<s>', '</s>'] \
+                if vocab_size is not None and vocab_size < len(word_counts.items()) + 2 else ['<s>', '</s>']
 
             counts = sorted(list(set(word_counts.values())), reverse=True)
             for count in counts:
@@ -93,8 +99,8 @@ class TextLoader():
                 vocabulary_inv = vocabulary_inv[:vocab_size]
 
         # Mapping from word to index
-        vocabulary = {x: i for i, x in enumerate(vocabulary_inv)}
-        return [vocabulary, vocabulary_inv]
+        vocab = {x: i for i, x in enumerate(vocabulary_inv)}
+        return [vocab, vocabulary_inv]
 
     def prepare_embedding_matrix(self, pretrained_embeddings):
 
@@ -158,8 +164,10 @@ class TextLoader():
 
         print('Key words without embeddings removed')
 
-        # remove training sentences without any key_words
-        data = data[data['key_words'].map(len) > 0]
+        # remove training sentences without any key_words or with more key_words than sequence length
+        data = data[(data['key_words'].map(len) > 0) & (data['key_words'].map(len) <= self.seq_length)]
+
+        print("Size after removing utterances with wrong number of key words: {}".format(len(data)))
 
         # prepare vocabulary of key words up to the same size as the size of data vocabulary
         # self.key_words_vocab, self.key_words_vocab_inv = self.build_vocab(list(data['key_words']), self.vocab_size,
@@ -180,6 +188,9 @@ class TextLoader():
         # data = data[data['key_words'].map(len) > 0]
         #
         # print('Sentences without key words removed')
+
+        # sort data by length of training sentences so that batches contain sentences within similar range
+        data = data.reindex(data[0].map(len).sort_values().index)
 
         self.key_words_count = np.array([len(key_words_group) for key_words_group in data['key_words']])
 
@@ -211,19 +222,21 @@ class TextLoader():
         np.save(os.path.join(key_words_dir, key_words_filename), self.key_words)
         np.save(os.path.join(key_words_dir, 'key_words_count.npy'), self.key_words_count)
 
-        # sort data by length of training sentences so that batches contain sentences within similar range
-        data = data.reindex(data[0].map(len).sort_values().index)
-
         return list(data[0])
 
-    def preprocess(self, input_file, vocab_file, vocab_size, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings, key_words_file, pos_tags, encoding):
+    def preprocess(self, input_file, vocab_file, vocab_size, unk_max_number, unk_max_count, vocabulary, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings, key_words_file, pos_tags, encoding):
 
         data = pd.read_csv(input_file, sep='\t', header=None, encoding=encoding)
 
         # Optional text cleaning or make them lower case, etc.
         data[0] = data[0].apply(clean_str)
+
+        print("Initial training data size: {}".format(len(data)))
+
         # Remove sentences with less than three words
         data = data[data[0].apply(lambda sentence: sentence.split()).map(len) > 3]
+
+        print("Size after removing utterances shorter than 4 words: {}".format(len(data)))
 
         # save the file with reduced number of sentences in order to train bpe model from it and extract pos tags
         input_dir = os.path.dirname(input_file)
@@ -231,20 +244,22 @@ class TextLoader():
             f.write('\n'.join(list(data[0])) + '\n')
 
         # TODO: add a function to extract pos tags first
-        if key_words_file is not None and pretrained_embeddings is not None:
+        # if key_words_file is not None and pretrained_embeddings is not None:
+        if key_words_file is not None:
             data['key_words'] = list(pd.read_csv(key_words_file, sep='\t', header=None, encoding=encoding)[0])
 
-        if use_bpe:
+        if use_bpe or bpe_model_path is not None:
 
             bpe_model = spm.SentencePieceProcessor()
+
             if bpe_model_path is None:
+
+                bpe_model_path = "bpe.model"
 
                 spm.SentencePieceTrainer.Train(
                     '--input=' + os.path.join(input_dir, 'input_cleaned.txt') + ' --model_prefix=bpe --vocab_size=' + str(bpe_size) + ' --model_type=bpe')
 
-                bpe_model.Load("bpe.model")
-            else:
-                bpe_model.Load(bpe_model_path)
+            bpe_model.Load(bpe_model_path)
 
             # list of encoded sentences with added start and end os sequence tokens
             data[0] = data[0].apply(lambda sentence: [1] + bpe_model.EncodeAsIds(sentence) + [2])
@@ -259,12 +274,37 @@ class TextLoader():
             # remove sentences longer than sequence length minus 2 (place for eos tokens)
             data = data[data[0].map(len) < self.seq_length - 1]
 
-        # KAMIL words to lista slow posortowana od najczestszych
-        self.vocab, self.words = self.build_vocab(list(data[0]), vocab_size, bpe_model)
-        self.vocab_size = len(self.words)
+        print("Size after removing utterances longer than seq_length: {}".format(len(data)))
 
-        with open(vocab_file, 'wb') as f:
-            cPickle.dump(self.words, f)
+        self.bpe_model_path = bpe_model_path
+
+        # KAMIL words to lista slow posortowana od najczestszych
+        if vocabulary is None:
+            self.vocab, self.words = self.build_vocab(list(data[0]), vocab_size, bpe_model)
+            self.vocab_size = len(self.words)
+
+            with open(vocab_file, 'wb') as f:
+                cPickle.dump(self.words, f)
+        else:
+            self.vocab = vocabulary
+
+        self.unk_token = self.vocab.get('<unk>')
+        self.sos_token = self.vocab.get('<s>')
+        self.eos_token = self.vocab.get('</s>')
+
+        if self.bpe_model_path is None:
+            data[0] = data[0].apply(lambda sentence: [self.sos_token] + [self.vocab.get(word, self.unk_token) for word in sentence] + [self.eos_token])
+
+        if unk_max_number >= 0 and self.unk_token is not None:
+            data = data[data[0].map(self.count_unks) <= unk_max_number]
+
+            print("Size after removing utterances not meeting unk_max_number criteria: {}".format(len(data)))
+
+        if unk_max_count is not None and self.unk_token is not None:
+            unk_sentences_indexes = data[data[0].map(self.count_unks) > 0].index[unk_max_count:]
+            data = data[~data.index.isin(unk_sentences_indexes)]
+
+            print("Size after removing utterances not meeting unk_max_count criteria: {}".format(len(data)))
 
         self.key_words = None
         self.key_words_count = None
@@ -275,25 +315,26 @@ class TextLoader():
         if pretrained_embeddings is not None:
             self.prepare_embedding_matrix(pretrained_embeddings)
 
-            if 'key_words' in data:
-                return self.prepare_keywords_embedding_matrix(data, key_words_file, pos_tags)
+        #     if 'key_words' in data:
+        #         return self.prepare_keywords_embedding_matrix(data, key_words_file, pos_tags)
+        #
+        #     else:
+        #         # sort data by length of training sentences so that batches contain sentences within similar range
+        #         data = data.reindex(data[0].map(len).sort_values().index)
+        #
+        # else:
+        #
+        #     data = data.reindex(data[0].map(len).sort_values().index)
 
-            else:
-                # sort data by length of training sentences so that batches contain sentences within similar range
-                data = data.reindex(data[0].map(len).sort_values().index)
+        if 'key_words' in data:
+            return self.prepare_keywords_embedding_matrix(data, key_words_file, pos_tags)
 
-        else:
-
-            data = data.reindex(data[0].map(len).sort_values().index)
+        # sort data by length of training sentences so that batches contain sentences within similar range
+        data = data.reindex(data[0].map(len).sort_values().index)
 
         return list(data[0])
 
-    def prepare_tensors(self, sentences, tensor_file, target_tensor_file, weights_file, use_bpe):
-
-        if not use_bpe:
-            unk_token_id = self.vocab.get('<unk>')
-            sentences = [[1] + [self.vocab.get(word, unk_token_id) for word in sentence] + [2] for sentence in
-                         sentences]
+    def prepare_tensors(self, sentences, tensor_file, target_tensor_file, weights_file):
 
         self.target_weights = np.array([[1] * len(sentence) + [0] * (self.seq_length - len(sentence))
                                         for sentence in sentences])
@@ -341,6 +382,7 @@ class TextLoader():
             self.key_words_count = self.key_words_count[:self.num_batches * self.batch_size]
             self.key_words_batches = np.split(self.key_words, self.num_batches)
             self.key_words_count_batches = np.split(self.key_words_count, self.num_batches)
+            assert len(self.key_words_batches) == len(self.x_batches), "Key word and input batches matrices size must match"
 
     def next_batch(self):
         batch_index = self.batch_order[self.pointer]
