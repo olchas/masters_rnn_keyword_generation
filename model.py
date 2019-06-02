@@ -225,7 +225,6 @@ class Model():
         # self.logits = tf.matmul(outputs.rnn_output, softmax_w) + softmax_b
         self.logits = outputs.rnn_output
         self.sample_id = outputs.sample_id
-        print(self.logits)
         self.probs = tf.nn.softmax(self.logits)
         # KAMIL loss ktory jest liczony na podstawie prawdopodobienstw slow, ktore maja wypadac nastepne w sekwencji
         # loss = legacy_seq2seq.sequence_loss_by_example([self.logits],
@@ -292,8 +291,6 @@ class Model():
 
         def beam_search_pick(prime, width, initial_state, tokens=False, keywords_ids=None, keywords_count=None):
             """Returns the beam search pick."""
-            if not len(prime) or prime == ' ':
-                prime = random.choice(list(vocab.keys()))
             prime_labels = [vocab.get(word, 0) for word in prime.split()]
             # KAMIL inicjalizacja beam search stanem zerowym, funkcja do predykcji i labelami prime wordow
 
@@ -303,7 +300,8 @@ class Model():
                             keywords_ids,
                             keywords_count)
             eos = vocab.get('</s>', 0) if tokens else None
-            samples, scores = bs.search(None, eos, k=width, maxsample=num)
+            oov = vocab.get('<unk>', None)
+            samples, scores = bs.search(oov, eos, k=width, maxsample=num)
             # zwrocenie najlepszej sekwencji
             return samples[np.argmin(scores)]
 
@@ -348,13 +346,13 @@ class Model():
                 keywords_ids = [[0] * self.attention_seq_length]
         if tokens and not prime.startswith('<s>'):
             prime = '<s> ' + prime
+        if not prime:
+            prime = random.choice(list(vocab.keys()))
         if not quiet:
             print(prime)
         if pick == 1:
             # KAMIL tutaj nalezy ustawic inital state na srednia keywordow
             state = initial_state
-            if not len(prime) or prime == ' ':
-                prime = random.choice(list(vocab.keys()))
             for word in prime.split()[:-1]:
                 if not quiet:
                     print(word)
