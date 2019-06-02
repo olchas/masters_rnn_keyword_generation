@@ -46,7 +46,6 @@ class BeamSearch():
         probs = []
 
         prime_sample = []
-        prime_score = 0
         prime_state = self.initial_state
 
         # Initialize the live sample with the prime.
@@ -55,8 +54,6 @@ class BeamSearch():
             # KAMIL liczenie score dla prime wordow na podstawie kolejnych predykcji nastepnych slow przez model
             # The first word does not contribute to the score as the probs have
             # not yet been determined.
-            if i > 0:
-                prime_score = prime_score - np.log(probs[0, label])
             probs, prime_state = self.predict(prime_sample, prime_state, self.keywords_ids, self.keywords_count)
             probs = probs[0]
 
@@ -67,17 +64,21 @@ class BeamSearch():
 
         live_k = 1  # samples that did not yet reached eos
         live_samples = [prime_sample]
-        live_scores = [prime_score]
+        live_scores = [0]
         live_states = [prime_state]
 
+        # KAMIL generowanie sie konczy, jak dostaniemy k (width) zakonczonych sampli
         while live_k and dead_k < k:
             # total score for every sample is sum of -log of word prb
+            # KAMIL tutaj chyba dla kazdego live sampla mamy prawdopodobienstwo dla kazdego slowa ze slownika
             cand_scores = np.array(live_scores)[:, None] - np.log(probs)
             if not use_unk and oov is not None:
                 cand_scores[:, oov] = 1e20
+            # KAMIL splaszczenie powoduje koniecznosc dzielenia przez rozmiar slownictwa
             cand_flat = cand_scores.flatten()
 
             # find the best (lowest) scores we have from all possible samples and new words
+            # KAMIL sposrod wszystkich wynikow wybieranych jest k najlepszych minus dead_k (czyli tyle, ile sie zdazylo zakonczyc)
             ranks_flat = cand_flat.argsort()[:(k - dead_k)]
             live_scores = cand_flat[ranks_flat]
 
@@ -87,6 +88,7 @@ class BeamSearch():
             live_states = [live_states[r // voc_size] for r in ranks_flat]
 
             # live samples that should be dead are...
+            # KAMIL to taka maska
             zombie = [s[-1] == eos or len(s) >= maxsample for s in live_samples]
 
             # add zombies to the dead
@@ -100,7 +102,7 @@ class BeamSearch():
             live_states = [s for s, z in zip(live_states, zombie) if not z]
             live_k = len(live_samples)
 
-            # Finally, compute the next-step probabilities and states.
+            # Finally, compute the next-step probabilities and states for each live sample
             probs, live_states = self.predict_samples(live_samples, live_states)
 
         return dead_samples + live_samples, dead_scores + live_scores
