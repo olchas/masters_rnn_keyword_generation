@@ -55,7 +55,7 @@ def evaluate(args):
         saved_args = cPickle.load(f)
     if args.processed_embeddings is not None:
         saved_args.processed_embeddings = args.processed_embeddings
-    with open(os.path.join(args.input_dir, 'words_vocab.pkl'), 'rb') as f:
+    with open(saved_args.words_vocab_file, 'rb') as f:
         words, vocab = cPickle.load(f)
 
 
