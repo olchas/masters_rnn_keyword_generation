@@ -18,6 +18,8 @@ def main():
                        help='data directory containing input.txt')
     parser.add_argument('--validation_data_dir', type=str, default=None,
                        help='directory with validation data')
+    parser.add_argument('--load_preprocessed', action='store_true', default=False,
+                       help='attempt to load ready data objects from provided directories')
     parser.add_argument('--input_encoding', type=str, default=None,
                        help='character encoding of input.txt, from https://docs.python.org/3/library/codecs.html#standard-encodings')
     parser.add_argument('--log_dir', type=str, default='logs',
@@ -84,7 +86,6 @@ def main():
     parser.add_argument('--init_from', type=str, default=None,
                        help="""continue training from saved model at this path. Path must contain files saved by previous training process:
                             'config.pkl'        : configuration;
-                            'words_vocab.pkl'   : vocabulary definitions;
                             'checkpoint'        : paths to model file(s) (created by tf).
                                                   Note: this file contains absolute paths, be careful when moving files around;
                             'model.ckpt-*'      : file(s) with model definition (created by tf)
@@ -94,19 +95,50 @@ def main():
 
 
 def train(args):
-    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.vocab_size, args.unk_max_number, args.unk_max_count, None, args.use_bpe, args.bpe_size, args.bpe_model_path,
-                             args.pretrained_embeddings, args.use_attention, args.pos_tags, args.input_encoding)
+    # TODO: add splitting data into training, validation and test corpora
+    # test corpora should only be cleaned using clean_str and prepared in terms of words outside of vocabulary
+
+    data_loader = TextLoader(args.load_preprocessed,
+                             'training',
+                             args.data_dir,
+                             args.batch_size,
+                             args.seq_length,
+                             args.vocab_size,
+                             args.unk_max_number,
+                             args.unk_max_count,
+                             None,
+                             args.use_bpe,
+                             args.bpe_size,
+                             args.bpe_model_path,
+                             args.pretrained_embeddings,
+                             args.use_attention,
+                             args.pos_tags,
+                             args.input_encoding)
+
     args.vocab_size = data_loader.vocab_size
+    args.words_vocab_file = data_loader.words_vocab_file
 
     if args.pretrained_embeddings is not None:
-        embedding_dir = os.path.dirname(args.pretrained_embeddings)
-        embedding_file = os.path.splitext(os.path.basename(args.pretrained_embeddings))[0]
-        embedding_array_file = embedding_file + '_processed.pkl'
-        args.processed_embeddings = os.path.join(embedding_dir, embedding_array_file)
+        args.processed_embeddings = os.path.join(data_loader.embedding_dir, 'embedding_matrix.pkl')
 
     if args.validation_data_dir is not None:
-        val_data_loader = TextLoader(args.validation_data_dir, args.batch_size, args.seq_length, args.vocab_size, args.unk_max_number, args.unk_max_count, data_loader.vocab, args.use_bpe, args.bpe_size, data_loader.bpe_model_path,
-                                     None, args.use_attention, args.pos_tags, args.input_encoding)
+        val_data_loader = TextLoader(args.load_preprocessed,
+                                     'validation',
+                                     args.validation_data_dir,
+                                     args.batch_size,
+                                     args.seq_length,
+                                     args.vocab_size,
+                                     args.unk_max_number,
+                                     args.unk_max_count,
+                                     data_loader.vocab,
+                                     args.use_bpe,
+                                     args.bpe_size,
+                                     data_loader.bpe_model_path,
+                                     args.pretrained_embeddings,
+                                     args.use_attention,
+                                     args.pos_tags,
+                                     args.input_encoding)
+
         validation_log = open(os.path.join(args.log_dir, 'validation_log.txt'), 'a')
 
     # check compatibility if training is continued from previously saved model
@@ -114,7 +146,6 @@ def train(args):
         # check if all necessary files exist
         assert os.path.isdir(args.init_from), " %s must be a path" % args.init_from
         assert os.path.isfile(os.path.join(args.init_from, "config.pkl")), "config.pkl file does not exist in path %s" % args.init_from
-        assert os.path.isfile(os.path.join(args.init_from, "words_vocab.pkl")), "words_vocab.pkl.pkl file does not exist in path %s" % args.init_from
         ckpt = tf.train.get_checkpoint_state(args.init_from)
         assert ckpt, "No checkpoint found"
         assert ckpt.model_checkpoint_path, "No model path found in checkpoint"
@@ -126,8 +157,10 @@ def train(args):
         for checkme in need_be_same:
             assert vars(saved_model_args)[checkme] == vars(args)[checkme], "Command line argument and saved model disagree on '%s' " % checkme
 
+        assert os.path.isfile(saved_model_args.words_vocab_file), "words_vocab.pkl.pkl file does not exist in path %s" % saved_model_args.words_vocab_file
+
         # open saved vocab/dict and check if vocabs/dicts are compatible
-        with open(os.path.join(args.init_from, 'words_vocab.pkl'), 'rb') as f:
+        with open(saved_model_args.words_vocab_file, 'rb') as f:
             saved_words, saved_vocab = cPickle.load(f)
 
         assert saved_words == data_loader.words, "Data and loaded model disagree on word set!"
@@ -135,7 +168,8 @@ def train(args):
 
     with open(os.path.join(args.save_dir, 'config.pkl'), 'wb') as f:
         cPickle.dump(args, f)
-    with open(os.path.join(args.save_dir, 'words_vocab.pkl'), 'wb') as f:
+
+    with open(data_loader.words_vocab_file, 'wb') as f:
         cPickle.dump((data_loader.words, data_loader.vocab), f)
 
     # KAMIL model sieci
@@ -229,14 +263,9 @@ def train(args):
 
                 # KAMIL train loss mozna akumulowac, zeby sobie zachowac loss po kazdej epoce
                 epoch_error += train_loss
+
                 if (e * data_loader.num_batches + b) % args.batch_size == 0:
-                    # KAMIL zapis logu?
                     train_writer.add_summary(summary, e * data_loader.num_batches + b)
-                    batch_speed = time.time() - batch_start
-                    print("{}/{} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}".format(
-                        e * data_loader.num_batches + b,
-                        args.num_epochs * data_loader.num_batches,
-                        e, train_loss, batch_speed))
 
             epoch_speed = time.time() - epoch_start
             print("epoch\t{}\tepoch_loss\t{:.3f}\tepoch_time\t{:.3f}\tlearning_rate\t{:.3f}\n".format(
@@ -287,29 +316,32 @@ def train(args):
                     validation_log.write("epoch\t{}\tvalidation_loss\t{:.3f}\tvalidation_time\t{:.3f}\n".format(
                         e, mean_val_error, val_speed))
 
-                    if args.adaptive_learning_rate > 0:
+                    # save information about best validation error and epoch in model
+                    if best_val_error is None or best_val_error > mean_val_error:
 
-                        if best_val_error is None or best_val_error > mean_val_error:
-                            # save information about best validation error and epoch in model
-                            best_val_error = mean_val_error
-                            best_val_epoch = e
+                        print('======= NEW BEST EPOCH =======')
+                        best_val_error = mean_val_error
+                        best_val_epoch = e
 
-                            sess.run(tf.assign(model.best_val_error, best_val_error))
-                            sess.run(tf.assign(model.best_val_epoch, best_val_epoch))
+                        sess.run(tf.assign(model.best_val_error, best_val_error))
+                        sess.run(tf.assign(model.best_val_epoch, best_val_epoch))
 
-                        elif e - best_val_epoch >= args.adaptive_learning_rate:
-                            learning_rate *= args.decay_rate
-                            sess.run(tf.assign(model.lr, learning_rate))
+                    # if adaptive learning rate is used and enough epochs have passed without improvement then decrease learning rate
+                    elif e - best_val_epoch >= args.adaptive_learning_rate and args.adaptive_learning_rate > 0:
+                        learning_rate *= args.decay_rate
+                        sess.run(tf.assign(model.lr, learning_rate))
 
                 saver.save(sess, checkpoint_path, global_step=e)
                 print("model saved to {}".format(checkpoint_path))
 
         train_writer.close()
+        data_loader.close()
 
     training_log.close()
 
     if args.validation_data_dir is not None:
         validation_log.close()
+        val_data_loader.close()
 
 
 if __name__ == '__main__':
