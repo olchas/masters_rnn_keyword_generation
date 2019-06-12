@@ -94,17 +94,13 @@ class Model():
 
                     train_embedding = not args.dont_train_embeddings
                     self.embedding = tf.get_variable(name="embedding",
-                                                     shape=[args.vocab_size, self.embedding_size],
+                                                     shape=[pretrained_embedding.shape[0], self.embedding_size],
                                                      initializer=tf.constant_initializer(pretrained_embedding),
                                                      trainable=train_embedding)
 
                     if args.use_attention:
-                        key_words_embedding = tf.get_variable(name="key_words_embedding",
-                                                              shape=[args.vocab_size, self.embedding_size],
-                                                              initializer=tf.constant_initializer(pretrained_embedding),
-                                                              trainable=False)
 
-                        attention_states = tf.nn.embedding_lookup(key_words_embedding, self.attention_key_words)
+                        attention_states = tf.nn.embedding_lookup(self.embedding, self.attention_key_words)
 
                 else:
                     self.embedding_size = args.embedding_size if args.embedding_size is not None else self.rnn_size
@@ -179,10 +175,12 @@ class Model():
             self.attention_model = True
 
             print('Using attention model')
+            # rnn_size here is the size of dense layers used to calculate attention weights
             self.attention_mechanism = tf.contrib.seq2seq.LuongAttention(
                 self.rnn_size, attention_states,
                 memory_sequence_length=self.attention_states_count)
 
+            # attention_layer_size is the size of final layer that concatenates cell output and context vector
             self.cell = tf.contrib.seq2seq.AttentionWrapper(
                 self.cell, self.attention_mechanism,
                 attention_layer_size=self.rnn_size)
@@ -267,7 +265,7 @@ class Model():
         else:
             return tf.matmul(tf.nn.embedding_lookup(self.embedding, words), self.embedding_w) + self.embedding_b
 
-    def sample(self, sess, words, vocab, num=50, prime='first all', sampling_type=1, pick=0, width=4, quiet=False, bpe_model_path=None, tokens=False, keywords=[]):
+    def sample(self, sess, words, vocab, num=50, prime='', sampling_type=1, pick=0, width=4, quiet=False, bpe_model_path=None, tokens=False, keywords=[]):
         def weighted_pick(weights):
             t = np.cumsum(weights)
             s = np.sum(weights)
@@ -289,9 +287,8 @@ class Model():
                                             feed)
             return probs, final_state
 
-        def beam_search_pick(prime, width, initial_state, tokens=False, keywords_ids=None, keywords_count=None):
+        def beam_search_pick(prime_labels, width, initial_state, tokens=False, keywords_ids=None, keywords_count=None):
             """Returns the beam search pick."""
-            prime_labels = [vocab.get(word, 0) for word in prime.split()]
             # KAMIL inicjalizacja beam search stanem zerowym, funkcja do predykcji i labelami prime wordow
 
             bs = BeamSearch(beam_search_predict,
@@ -314,12 +311,20 @@ class Model():
             bpe_model = spm.SentencePieceProcessor()
             bpe_model.Load(bpe_model_path)
             prime = " ".join(bpe_model.EncodeAsPieces(prime))
-            keywords = [bpe_model.EncodeAsPieces(keyword)[0] for keyword in keywords]
+            keywords_bpe = []
+            for keyword in keywords:
+                keywords_bpe += bpe_model.EncodeAsPieces(keyword)
+            keywords = keywords_bpe
+
+        # take only up to seq_length keywords
+        keywords = keywords[:self.attention_seq_length]
+
+        unk_token = vocab.get('<unk>', 0)
 
         # prepare initial state as mean of keyword embeddings
         if keywords:
-            keywords_ids = [vocab.get(keyword, 0) for keyword in keywords]
-            # TODO: add reading from original GloVe embeddings (needed especially for bpe models)
+            # TODO: what to do with key words outside of dictionary
+            keywords_ids = [vocab.get(keyword, unk_token) for keyword in keywords]
             keywords_embedded = sess.run(self.embedding_lookup(keywords_ids))
             mean_embedding = np.mean(keywords_embedded, axis=0)
             mean_embedding = mean_embedding.reshape(1, mean_embedding.shape[0])
@@ -333,7 +338,7 @@ class Model():
                 # keywords_embedded = np.expand_dims(np.concatenate((keywords_embedded, [[0] * self.embedding_size] * (self.attention_seq_length - len(keywords)))), axis=0)
                 # initial_state = sess.run(self.cell.zero_state(1, tf.float32))
 
-                # TODO decide whether state of attention cells should be initiated as well
+                # TODO: decide whether state of attention cells should be initiated as well
                 initial_state = sess.run(self.cell.zero_state(1, tf.float32).clone(cell_state=lstm_cells_state))
             else:
 
@@ -358,7 +363,7 @@ class Model():
                     print(word)
                 x = np.zeros((1, 1))
                 # KAMIL tu sa feedowane primewordy i zmieniany jest w ten sposob tylko stan
-                x[0, 0] = vocab.get(word, 0)
+                x[0, 0] = vocab.get(word, unk_token)
                 if self.attention_model:
                     feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
                 else:
@@ -371,7 +376,7 @@ class Model():
             # KAMIL jakies zakonczenie po wygenerowaniu kropki konczacej zdanie
             for n in range(num):
                 x = np.zeros((1, 1))
-                x[0, 0] = vocab.get(word, 0)
+                x[0, 0] = vocab.get(word, unk_token)
                 if self.attention_model:
                     feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
                 else:
@@ -394,9 +399,9 @@ class Model():
                     break
                 ret += [word]
         elif pick == 2:
-            pred = beam_search_pick(prime, width, initial_state, tokens, keywords_ids, keywords_count)
+            pred = beam_search_pick([vocab.get(word, unk_token) for word in prime.split()], width, initial_state, tokens, keywords_ids, keywords_count)
             for i, label in enumerate(pred):
                 ret += [words[label] if i > 0 else words[label]]
-        print (ret)
         ret = bpe_model.DecodePieces(ret) if bpe_model_path is not None else " ".join(ret).replace('<s> ', '').replace(' </s>', '')
+        print(ret)
         return ret
