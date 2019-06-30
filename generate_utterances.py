@@ -16,7 +16,7 @@ def parse_arguments():
                         help='model directory to load stored checkpointed models from')
     parser.add_argument('--model_checkpoint', type=str, default=None,
                         help='optional path to checkpointed model')
-    parser.add_argument('--test_file', '-t', type=str,
+    parser.add_argument('--test_file', '-t', type=str, required=True,
                         help='path do file with test sentences')
     parser.add_argument('--output_dir', '-o', type=str, default='evaluation',
                         help='model directory to store evaluation results')
@@ -41,6 +41,10 @@ def parse_arguments():
                         help='use <s> and </s> tokens to determine start and end of sequence')
     parser.add_argument('--state_initialization', default='average', choices=['average', 'zero'], type=str,
                        help='how the state of rnn should be initialized')
+    parser.add_argument('--start_index', default=0, type=int,
+                       help='index of first utterance from test_file to generate')
+    parser.add_argument('--nr_of_loops', default=None, type=int,
+                       help='nr of utterances to generate')
     parser.add_argument('--quiet', '-q', default=False, action='store_true',
                         help='suppress printing the prime text (default false)')
 
@@ -90,8 +94,8 @@ def evaluate(args):
         known_keywords = [[keyword for keyword in keyword_group if keyword in vocab]
                           for keyword_group in keywords]
 
-    header = ['index', 'expected', 'generated', 'all_keywords', 'known_keywords', 'prime', 'with_unk']
-    generated_data = [header]
+    generated_data = []
+
     model = Model(saved_args, True)
     with tf.Session() as sess:
         tf.global_variables_initializer().run()
@@ -103,7 +107,12 @@ def evaluate(args):
             model_checkpoint_path = ckpt.model_checkpoint_path
 
         saver.restore(sess, model_checkpoint_path)
+
         for i, test_utterance in enumerate(test_utterances):
+
+            if i < args.start_index or (args.nr_of_loops is not None and i > args.start_index + args.nr_of_loops - 1):
+                continue
+
             prime = ' '.join(test_utterance.split()[:args.prime])
 
             utterance_keywords = known_keywords[i] if not args.dont_provide_keywords else []
@@ -137,8 +146,16 @@ def evaluate(args):
 
             print('\t'.join(generated_data[-1]))
 
-    with open(os.path.join(args.output_dir, 'generated_utterances.txt'), 'w') as f:
-        f.write('\n'.join(map(lambda x: '\t'.join(x), generated_data)) + '\n')
+    if args.start_index != 0:
+        file_mode = 'a'
+    else:
+        header = ['index', 'expected', 'generated', 'all_keywords', 'known_keywords', 'prime', 'with_unk']
+        generated_data = [header] + generated_data
+        file_mode = 'w'
+
+    if generated_data:
+        with open(os.path.join(args.output_dir, 'generated_utterances.txt'), file_mode) as f:
+            f.write('\n'.join(map(lambda x: '\t'.join(x), generated_data)) + '\n')
 
 
 if __name__ == '__main__':
