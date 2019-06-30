@@ -1,11 +1,11 @@
 from __future__ import print_function
+
 import argparse
 import os
 import time
 from six.moves import cPickle
 
 import numpy as np
-import pandas as pd
 import tensorflow as tf
 
 from model import Model
@@ -29,9 +29,13 @@ def main():
     parser.add_argument('--use_attention', default=False, action='store_true',
                        help='whether to use an attention model'
                             'if other than None, input_tagged.txt file must be present in data directories')
+    parser.add_argument('--attention_type', default='luong', choices=['bahdanau', 'luong', 'bahdanau_coverage'], type=str,
+                       help='type of attention to use')
     parser.add_argument('--pos_tags', type=str, nargs='+',
-                        default=['_JJ', '_NN', '_NNP', '_NNPS', '_NNS', '_RB', '_VB', '_VBD', '_VBG', '_VBN', '_VBP', '_VBZ'],
+                        default=['_JJ', '_JJR', '_JJS', '_NN', '_NNP', '_NNPS', '_NNS', '_RB', '_RBR', '_RBS', '_VB', '_VBD', '_VBG', '_VBN', '_VBP', '_VBZ'],
                         help='list of pos tags that should be used as keywords')
+    parser.add_argument('--state_initialization', default='prev', choices=['prev', 'zero'], type=str,
+                       help='how the state of rnn should be initialized for each batch during training')
     parser.add_argument('--rnn_size', type=int, default=200,
                        help='size of RNN hidden state')
     parser.add_argument('--embedding_size', type=int, default=None,
@@ -39,8 +43,6 @@ def main():
                             'if you specify pretrained embeddings this argument is ignored')
     parser.add_argument('--num_layers', type=int, default=2,
                        help='number of layers in the RNN')
-    parser.add_argument('--model', type=str, default='lstm',
-                       help='rnn, gru, or lstm')
     parser.add_argument('--batch_size', type=int, default=50,
                        help='minibatch size')
     parser.add_argument('--seq_length', type=int, default=25,
@@ -95,8 +97,6 @@ def main():
 
 
 def train(args):
-    # TODO: add splitting data into training, validation and test corpora
-    # test corpora should only be cleaned using clean_str and prepared in terms of words outside of vocabulary
 
     data_loader = TextLoader(args.load_preprocessed,
                              'training',
@@ -117,6 +117,7 @@ def train(args):
 
     args.vocab_size = data_loader.vocab_size
     args.words_vocab_file = data_loader.words_vocab_file
+    args.bpe_model_path = data_loader.bpe_model_path
 
     if args.pretrained_embeddings is not None:
         args.processed_embeddings = os.path.join(data_loader.embedding_dir, 'embedding_matrix.pkl')
@@ -216,8 +217,8 @@ def train(args):
             # KAMIL w kazdej epoce caly zbior danych jest analizowany?
             data_loader.reset_batch_pointer()
             # KAMIL czy to sprawia, ze po kazdej epoce jest zerowy stan?
-            zero_state = sess.run(model.initial_state)
 
+            zero_state = sess.run(model.initial_state)
             state = zero_state
 
             epoch_error = 0
@@ -227,10 +228,12 @@ def train(args):
 
             # KAMIL dla kazdego batcha, czym sa x i y, czyli dane wejsciowe i target? czy u mnie to beda keywordy i zdania?
             for b in range(data_loader.pointer, data_loader.num_batches):
-                batch_start = time.time()
                 x, y, target_weights, key_words, key_words_count = data_loader.next_batch()
 
                 target_sequence_length = np.sum(target_weights, axis=0)
+
+                if args.state_initialization == 'zero':
+                    state = zero_state
 
                 if key_words is not None:
                     feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights,
