@@ -10,7 +10,6 @@ from tensorflow.contrib import legacy_seq2seq
 
 from bahdanau_coverage_attention import BahdanauCoverageAttention, CustomAttentionWrapper
 from beam import BeamSearch
-from utils import clean_str
 
 
 class Model():
@@ -305,7 +304,6 @@ class Model():
             return samples[np.argmin(scores)]
 
         ret = []
-        prime = clean_str(prime)
         keywords_ids = None
         keywords_count = None
 

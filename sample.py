@@ -6,8 +6,8 @@ import sentencepiece as spm
 import tensorflow as tf
 from six.moves import cPickle
 
-
 from model import Model
+from utils import clean_str
 
 
 def parse_arguments():
@@ -61,6 +61,8 @@ def sample(args):
         words, vocab = cPickle.load(f)
 
     model = Model(saved_args, True)
+
+    args.prime = clean_str(args.prime)
 
     if saved_args.bpe_model_path is not None:
         bpe_model = spm.SentencePieceProcessor()
