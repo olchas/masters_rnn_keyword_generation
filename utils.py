@@ -1,15 +1,28 @@
 # -*- coding: utf-8 -*-
+from numpy.random import seed
+seed(1)
 
 import collections
 import itertools
 import os
 import re
+import string
 from six.moves import cPickle
 
 import h5py
 import numpy as np
 import pandas as pd
 import sentencepiece as spm
+from nltk.corpus import stopwords
+
+# punctuation_to_leave = "-,!?'/."
+punctuation_to_leave = "'"
+punctuation_to_remove = string.punctuation + '—'
+for sign in punctuation_to_leave:
+    punctuation_to_remove = punctuation_to_remove.replace(sign, '')
+translator = str.maketrans(punctuation_to_remove, ' ' * len(punctuation_to_remove))
+
+stop_words = set(stopwords.words('english') + ["'s", "'m", "'ve", "n't", "'re", "'d", "'ll"])
 
 
 def clean_str(string):
@@ -19,15 +32,16 @@ def clean_str(string):
     """
     if not isinstance(string, str):
         string = str(string)
-    string = string.lower()
-    string = re.sub(r"[^a-z0-9\-,!?\'/]", " ", string)
-    # remove duplicates of any punctuation, separate certain punctuation from words
+    # lowercase and remove most of punctuation
+    string = string.lower().translate(translator)
+    # remove duplicates of any punctuation left, separate certain punctuation from words
     string = re.sub(r"\?+", " ? ", string)
     string = re.sub(r",+", " , ", string)
     string = re.sub(r"!+", " ! ", string)
     string = re.sub(r"-+", "-", string)
     string = re.sub(r"'+", "'", string)
     string = re.sub(r"/+", " / ", string)
+    string = re.sub(r"\.+", " . ", string)
     # remove any dashes at the beginning of string or not preceded by a letter
     string = re.sub(r"([^\w]|^)-", r"\1", string)
     # remove any dashes at the end of string or not preceding a letter
@@ -37,6 +51,7 @@ def clean_str(string):
     string = re.sub(r"\'m", " \'m", string)
     string = re.sub(r"\'ve", " \'ve", string)
     string = re.sub(r"n\'t", " n\'t", string)
+    string = re.sub(r"n \'t", " n\'t", string)
     string = re.sub(r"\'re", " \'re", string)
     string = re.sub(r"\'d", " \'d", string)
     string = re.sub(r"\'ll", " \'ll", string)
@@ -52,7 +67,7 @@ class TextLoader():
         self.seq_length = seq_length
         self.corpus_type = corpus_type
 
-        self.attention_model = use_attention and pretrained_embeddings is not None
+        self.attention_model = use_attention
 
         self.input_file = os.path.join(data_dir, "input.txt")
         self.words_vocab_file = os.path.join(data_dir, "words_vocab.pkl")
@@ -250,34 +265,27 @@ class TextLoader():
 
         data = pd.read_csv(self.input_file, sep='\t', header=None, encoding=encoding)
 
-        # TODO: add removing lines containing non latin signs
-
-        # Optional text cleaning or make them lower case, etc.
-        data[0] = data[0].apply(clean_str)
-
-        print("Initial training data size: {}".format(len(data)))
-
-        # Remove sentences with less than three words
-        data = data[data[0].apply(lambda sentence: sentence.split()).map(len) > 3]
-
-        print("Size after removing utterances shorter than 4 words: {}".format(len(data)))
-
-        # save the file with reduced number of sentences in order to train bpe model from it
-        with open(os.path.join(self.data_dir, 'input_cleaned.txt'), 'w') as f:
-            f.write('\n'.join(list(data[0])) + '\n')
+        print("Initial data size: {}".format(len(data)))
 
         if self.key_words_file is not None:
             data['key_words'] = list(pd.read_csv(self.key_words_file, sep='\t', header=None, encoding=encoding)[0])
 
-            # replace tagged sentence with list of key words from allowed pos tags
+            assert len(data['key_words']) == len(data[0]), "Size of input data and tagged data does not match"
+
+            # replace tagged sentence with list of key words from allowed pos tags, not taking stop words into account
             data['key_words'] = data['key_words'].apply(lambda sentence: [word.split('_')[0]
                                                                           for word in sentence.strip().split()
-                                                                          if word.endswith(tuple(pos_tags))])
+                                                                          if word.endswith(tuple(pos_tags))
+                                                                          and word.split('_')[0] not in stop_words])
 
             # remove lines without any keywords of specified pos tags
             data = data[(data['key_words'].map(len) > 0)]
 
             print("Size after removing utterances without specified pos tags: {}".format(len(data)))
+
+        # save the file with reduced number of sentences in order to train bpe model from it
+        with open(os.path.join(self.data_dir, 'input_cleaned.txt'), 'w') as f:
+            f.write('\n'.join(list(data[0])) + '\n')
 
         if use_bpe or bpe_model_path is not None:
 
