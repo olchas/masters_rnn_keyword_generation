@@ -8,6 +8,7 @@ import tensorflow as tf
 from tensorflow.contrib import rnn
 from tensorflow.contrib import legacy_seq2seq
 
+from bahdanau_coverage_attention import BahdanauCoverageAttention, CustomAttentionWrapper
 from beam import BeamSearch
 from utils import clean_str
 
@@ -22,19 +23,10 @@ class Model():
             args.batch_size = 1
             args.seq_length = 1
 
-        if args.model == 'rnn':
-            cell_fn = rnn.BasicRNNCell
-        elif args.model == 'gru':
-            cell_fn = rnn.GRUCell
-        elif args.model == 'lstm':
-            cell_fn = rnn.BasicLSTMCell
-        else:
-            raise Exception("model type not supported: {}".format(args.model))
-
         cells = []
         for _ in range(args.num_layers):
             # KAMIL rozmiar hidden layer
-            cell = cell_fn(args.rnn_size)
+            cell = rnn.BasicLSTMCell(args.rnn_size)
             if args.dropout_prob > 0:
                cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=max(0, 1 - args.dropout_prob))
             cells.append(cell)
@@ -170,18 +162,28 @@ class Model():
 
         self.attention_model = False
 
-        if args.use_attention and args.processed_embeddings is not None:
+        if args.use_attention:
+
+            if args.attention_type == 'bahdanau':
+                attention_type = tf.contrib.seq2seq.BahdanauAttention
+                attention_wrapper = tf.contrib.seq2seq.AttentionWrapper
+            elif args.attention_type == 'bahdanau_coverage':
+                attention_type = BahdanauCoverageAttention
+                attention_wrapper = CustomAttentionWrapper
+            else:
+                attention_type = tf.contrib.seq2seq.LuongAttention
+                attention_wrapper = tf.contrib.seq2seq.AttentionWrapper
 
             self.attention_model = True
 
             print('Using attention model')
             # rnn_size here is the size of dense layers used to calculate attention weights
-            self.attention_mechanism = tf.contrib.seq2seq.LuongAttention(
+            self.attention_mechanism = attention_type(
                 self.rnn_size, attention_states,
                 memory_sequence_length=self.attention_states_count)
 
             # attention_layer_size is the size of final layer that concatenates cell output and context vector
-            self.cell = tf.contrib.seq2seq.AttentionWrapper(
+            self.cell = attention_wrapper(
                 self.cell, self.attention_mechanism,
                 attention_layer_size=self.rnn_size)
 
@@ -265,7 +267,7 @@ class Model():
         else:
             return tf.matmul(tf.nn.embedding_lookup(self.embedding, words), self.embedding_w) + self.embedding_b
 
-    def sample(self, sess, words, vocab, num=50, prime='', sampling_type=1, pick=0, width=4, quiet=False, bpe_model_path=None, tokens=False, keywords=[]):
+    def sample(self, sess, words, vocab, num=50, prime='', sampling_type=1, pick=0, width=4, quiet=False, tokens=False, keywords=[], state_initialization='average'):
         def weighted_pick(weights):
             t = np.cumsum(weights)
             s = np.sum(weights)
@@ -299,7 +301,7 @@ class Model():
             eos = vocab.get('</s>', 0) if tokens else None
             oov = vocab.get('<unk>', None)
             samples, scores = bs.search(oov, eos, k=width, maxsample=num)
-            # zwrocenie najlepszej sekwencji
+            # returning the best sequence
             return samples[np.argmin(scores)]
 
         ret = []
@@ -307,48 +309,51 @@ class Model():
         keywords_ids = None
         keywords_count = None
 
-        if bpe_model_path is not None:
-            bpe_model = spm.SentencePieceProcessor()
-            bpe_model.Load(bpe_model_path)
-            prime = " ".join(bpe_model.EncodeAsPieces(prime))
-            keywords_bpe = []
-            for keyword in keywords:
-                keywords_bpe += bpe_model.EncodeAsPieces(keyword)
-            keywords = keywords_bpe
-
         # take only up to seq_length keywords
         keywords = keywords[:self.attention_seq_length]
 
         unk_token = vocab.get('<unk>', 0)
 
-        # prepare initial state as mean of keyword embeddings
         if keywords:
-            # TODO: what to do with key words outside of dictionary
-            keywords_ids = [vocab.get(keyword, unk_token) for keyword in keywords]
-            keywords_embedded = sess.run(self.embedding_lookup(keywords_ids))
-            mean_embedding = np.mean(keywords_embedded, axis=0)
-            mean_embedding = mean_embedding.reshape(1, mean_embedding.shape[0])
+
+            # key words outside of vocabulary are not used
+            keywords_ids = [vocab[keyword] for keyword in keywords if keyword in vocab]
+
+            # if there are no keywords in dictionary, then assign the zero state
+            if not keywords_ids or state_initialization == 'zero':
+                initial_state = sess.run(self.cell.zero_state(1, tf.float32))
+
+            # prepare initial state as average of keyword embeddings
+            elif state_initialization == 'average':
+
+                keywords_embedded = sess.run(self.embedding_lookup(keywords_ids))
+                mean_embedding = np.mean(keywords_embedded, axis=0)
+                mean_embedding = mean_embedding.reshape(1, mean_embedding.shape[0])
+
+                if self.attention_model:
+                    mean_embedding = tf.convert_to_tensor(mean_embedding, dtype=tf.float32)
+                    lstm_cells_state = tuple(
+                        [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
+
+                    # TODO: decide whether state of attention cells should be initiated as well
+                    initial_state = sess.run(self.cell.zero_state(1, tf.float32).clone(cell_state=lstm_cells_state))
+                else:
+
+                    initial_state = tuple(
+                        [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
 
             if self.attention_model:
-                mean_embedding = tf.convert_to_tensor(mean_embedding, dtype=tf.float32)
-                lstm_cells_state = tuple(
-                    [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
-                keywords_ids = [keywords_ids + [0] * (self.attention_seq_length - len(keywords))]
-                keywords_count = [len(keywords)]
+
+                keywords_ids = [keywords_ids + [unk_token] * (self.attention_seq_length - len(keywords_ids))]
+                keywords_count = [len(keywords_ids)] if keywords_ids else [1]
                 # keywords_embedded = np.expand_dims(np.concatenate((keywords_embedded, [[0] * self.embedding_size] * (self.attention_seq_length - len(keywords)))), axis=0)
-                # initial_state = sess.run(self.cell.zero_state(1, tf.float32))
 
-                # TODO: decide whether state of attention cells should be initiated as well
-                initial_state = sess.run(self.cell.zero_state(1, tf.float32).clone(cell_state=lstm_cells_state))
-            else:
-
-                initial_state = tuple(
-                    [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
         else:
             initial_state = sess.run(self.cell.zero_state(1, tf.float32))
             if self.attention_model:
                 keywords_count = [1]
-                keywords_ids = [[0] * self.attention_seq_length]
+                keywords_ids = [[unk_token] * self.attention_seq_length]
+
         if tokens and not prime.startswith('<s>'):
             prime = '<s> ' + prime
         if not prime:
@@ -374,7 +379,7 @@ class Model():
             word = prime.split()[-1]
             # KAMIL tutaj sa feedowane kolejne slowa zwracane przez siec
             # KAMIL jakies zakonczenie po wygenerowaniu kropki konczacej zdanie
-            for n in range(num):
+            for n in range(num - len(prime)):
                 x = np.zeros((1, 1))
                 x[0, 0] = vocab.get(word, unk_token)
                 if self.attention_model:
@@ -402,6 +407,4 @@ class Model():
             pred = beam_search_pick([vocab.get(word, unk_token) for word in prime.split()], width, initial_state, tokens, keywords_ids, keywords_count)
             for i, label in enumerate(pred):
                 ret += [words[label] if i > 0 else words[label]]
-        ret = bpe_model.DecodePieces(ret) if bpe_model_path is not None else " ".join(ret).replace('<s> ', '').replace(' </s>', '')
-        print(ret)
         return ret
