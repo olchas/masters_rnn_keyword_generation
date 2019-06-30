@@ -2,8 +2,10 @@ from __future__ import print_function
 import argparse
 import os
 
+import sentencepiece as spm
 import tensorflow as tf
 from six.moves import cPickle
+
 
 from model import Model
 
@@ -33,6 +35,8 @@ def parse_arguments():
                             'this embedding must match vocabulary of input data')
     parser.add_argument('--tokens', '-t', default=False, action='store_true',
                         help='use <s> and <\s> tokens to determine start and end of sequence')
+    parser.add_argument('--state_initialization', default='average', choices=['average', 'zero'], type=str,
+                       help='how the state of rnn should be initialized')
     parser.add_argument('--keywords', '-k', type=str, nargs='*', default=[],
                         help='list of space separated keywords to use for initial state')
     parser.add_argument('--quiet', '-q', default=False, action='store_true',
@@ -51,9 +55,23 @@ def sample(args):
         saved_args = cPickle.load(f)
     if args.processed_embeddings is not None:
         saved_args.processed_embeddings = args.processed_embeddings
+    if args.bpe_model_path is not None:
+        saved_args.bpe_model_path = args.bpe_model_path
     with open(saved_args.words_vocab_file, 'rb') as f:
         words, vocab = cPickle.load(f)
+
     model = Model(saved_args, True)
+
+    if saved_args.bpe_model_path is not None:
+        bpe_model = spm.SentencePieceProcessor()
+        bpe_model.Load(saved_args.bpe_model_path)
+
+        args.prime = " ".join(bpe_model.EncodeAsPieces(args.prime))
+        keywords_bpe = []
+        for keyword in args.keywords:
+            keywords_bpe += bpe_model.EncodeAsPieces(keyword)
+        args.keywords = keywords_bpe
+
     with tf.Session() as sess:
         tf.global_variables_initializer().run()
         saver = tf.train.Saver(tf.global_variables())
@@ -66,8 +84,14 @@ def sample(args):
 
         saver.restore(sess, model_checkpoint_path)
         for _ in range(args.count):
-            print(model.sample(sess, words, vocab, args.n, args.prime, args.sample, args.pick, args.width,
-                               args.quiet, args.bpe_model_path, args.tokens, args.keywords))
+            generated_utterance = model.sample(sess, words, vocab, args.n, args.prime, args.sample, args.pick,
+                                               args.width, args.quiet, args.tokens, args.keywords,
+                                               args.state_initialization)
+
+            generated_utterance = bpe_model.DecodePieces(generated_utterance) if saved_args.bpe_model_path is not None \
+                else " ".join(generated_utterance).replace('<s> ', '').replace(' </s>', '')
+
+            print(generated_utterance)
 
 
 if __name__ == '__main__':
