@@ -73,7 +73,7 @@ def main():
                        help='%% of gpu memory to be allocated to this process. Default is 66.6%%')
     parser.add_argument('--use_bpe', default=False, action='store_true',
                        help='true if you want to use bpe on train data')
-    parser.add_argument('--bpe_size',type=int, default=32000,
+    parser.add_argument('--bpe_size', type=int, default=32000,
                        help='size of bpe vocabulary, valid only when use_bpe is true')
     parser.add_argument('--bpe_model_path', type=str, default=None,
                        help='path to pretrained bpe model, valid only when use_bpe is true')
@@ -154,7 +154,7 @@ def train(args):
         # open old config and check if models are compatible
         with open(os.path.join(args.init_from, 'config.pkl'), 'rb') as f:
             saved_model_args = cPickle.load(f)
-        need_be_same = ["model", "rnn_size", "num_layers", "seq_length"]
+        need_be_same = ["rnn_size", "embedding_size", "num_layers", "dropout_prob", "batch_size", "seq_length", "attention_type", "use_attention", "dont_train_embeddings"]
         for checkme in need_be_same:
             assert vars(saved_model_args)[checkme] == vars(args)[checkme], "Command line argument and saved model disagree on '%s' " % checkme
 
@@ -310,9 +310,9 @@ def train(args):
 
                         val_error += val_train_loss[0]
 
-                    val_speed = time.time() - val_start
-
                     mean_val_error = val_error / val_data_loader.num_batches
+
+                    val_speed = time.time() - val_start
 
                     print("epoch\t{}\tvalidation_loss\t{:.3f}\tvalidation_time\t{:.3f}\n".format(
                         e, mean_val_error, val_speed))
