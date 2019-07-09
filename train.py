@@ -59,7 +59,7 @@ def main():
                        help='save frequency in epochs')
     parser.add_argument('--grad_clip', type=float, default=5.,
                        help='clip gradients at this value')
-    parser.add_argument('--learning_rate', type=float, default=0.002,
+    parser.add_argument('--learning_rate', type=float, default=0.001,
                        help='initial learning rate')
     parser.add_argument('--adaptive_learning_rate', type=int, default=0,
                        help='maximal number of epochs which did not improve the best validation cost after which learning_rate should be decreased by decay_rate;'
@@ -67,8 +67,8 @@ def main():
                             'requires validation data to work')
     parser.add_argument('--dropout_prob', type=float, default=0,
                        help='dropout probability that will be added to output of each recurrent layer; 0 for not dropout')
-    parser.add_argument('--decay_rate', type=float, default=0.97,
-                       help='decay rate for rmsprop')
+    parser.add_argument('--decay_rate', type=float, default=1.00,
+                       help='decay rate for adam')
     parser.add_argument('--gpu_mem', type=float, default=0.666,
                        help='%% of gpu memory to be allocated to this process. Default is 66.6%%')
     parser.add_argument('--use_bpe', default=False, action='store_true',
