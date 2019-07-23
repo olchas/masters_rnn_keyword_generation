@@ -57,6 +57,10 @@ def main():
                        help='number of epochs')
     parser.add_argument('--save_every', type=int, default=1,
                        help='save frequency in epochs')
+    parser.add_argument('--save_all', action='store_true', default=False,
+                       help='True if you do want to save all models, not only the ones that are better than previous best')
+    parser.add_argument('--max_worse_validations', type=int, default=5,
+                       help='maximal number of validations that did not improve after which training should be finished early')
     parser.add_argument('--grad_clip', type=float, default=5.,
                        help='clip gradients at this value')
     parser.add_argument('--learning_rate', type=float, default=0.001,
@@ -173,7 +177,6 @@ def train(args):
     with open(data_loader.words_vocab_file, 'wb') as f:
         cPickle.dump((data_loader.words, data_loader.vocab), f)
 
-    # KAMIL model sieci
     model = Model(args)
 
     merged = tf.summary.merge_all()
@@ -190,7 +193,7 @@ def train(args):
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
         train_writer.add_graph(sess.graph)
         tf.global_variables_initializer().run()
-        # KAMIL cos od zapisywania modeli
+
         saver = tf.train.Saver(tf.global_variables())
         # restore model
         if args.init_from is not None:
@@ -208,25 +211,23 @@ def train(args):
             sess.run(tf.assign(model.lr, learning_rate))
 
         for e in range(start_epoch, args.num_epochs):
+
             epoch_start = time.time()
-            # KAMIL decay rate powoduje zmniejszanie sie learning rate w miare postepow
+            # decrease learning rate after every epoch if adaptive_learning_rate is not used
             if (args.validation_data_dir is None or args.adaptive_learning_rate <= 0) and e > 0:
                 learning_rate *= args.decay_rate
                 sess.run(tf.assign(model.lr, learning_rate))
-            # KAMIL data loader laduje dane
-            # KAMIL w kazdej epoce caly zbior danych jest analizowany?
+
             data_loader.reset_batch_pointer()
-            # KAMIL czy to sprawia, ze po kazdej epoce jest zerowy stan?
 
             zero_state = sess.run(model.initial_state)
             state = zero_state
 
             epoch_error = 0
 
-            # KAMIL po kazdej epoce zapisanie jej numeru w modelu
+            # as every epoch is started, save its number in the model
             sess.run(tf.assign(model.epoch_pointer, e))
 
-            # KAMIL dla kazdego batcha, czym sa x i y, czyli dane wejsciowe i target? czy u mnie to beda keywordy i zdania?
             for b in range(data_loader.pointer, data_loader.num_batches):
                 x, y, target_weights, key_words, key_words_count = data_loader.next_batch()
 
@@ -235,6 +236,7 @@ def train(args):
                 if args.state_initialization == 'zero':
                     state = zero_state
 
+                # prepare a dict feeding data to the model
                 if key_words is not None:
                     feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights,
                             model.target_sequence_length: target_sequence_length, model.initial_state: state,
@@ -242,29 +244,11 @@ def train(args):
                 else:
                     feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights,
                             model.target_sequence_length: target_sequence_length, model.initial_state: state}
-                # KAMIL sess.run chyba sie podawalo parametry do zmiany i dane do treningu - feed
-                # KAMIL model.train_op - optimizer do minimalizacji model.cost, model.final_state - stan sieci po tym batchu danych, jest poczatkowym stanem w nastepnym kroku?
-                # KAMIL po co w sumie zachowywac stan do nastepnego batcha? -> czemu nie zerowy stan?
-                # KAMIL merged - zbior zmiennych sieci modyfikowalnych? takie wartosci jak max, min, mean macierzy W i wektora b
-                # KAMIL sess.run zwraca koncowe postaci tych wartosci po zakonczeniu obliczen
-
-                # KAMIL: czemu sluzy inc_batch_pointer_op? -> to jest po to, zeby w modelu przechowywac informacje o batchu przy wznawianiu
-                # KAMIL: po co w feedzie jest ten batch_time? -> chyba tylko po to, zeby dodac to do merged/summary
-
-                # x_transposed = x.transpose()
-                # for i, row in enumerate(key_words):
-                #     for keyword in row:
-                #         for word in x_transposed[i]:
-                #             if word == keyword:
-                #                 break
-                #         else:
-                #             sentence = [data_loader.words[index] for index in x_transposed[i]]
-                #             print("keyword {} missing in sentence {}".format(data_loader.words[keyword], sentence))
 
                 summary, train_loss, state, _ = sess.run([merged, model.cost, model.final_state,
                                                           model.train_op], feed)
 
-                # KAMIL train loss mozna akumulowac, zeby sobie zachowac loss po kazdej epoce
+                # accumulate the train_loss
                 epoch_error += train_loss
 
                 if (e * data_loader.num_batches + b) % args.batch_size == 0:
@@ -276,7 +260,6 @@ def train(args):
             training_log.write("epoch\t{}\tepoch_loss\t{:.3f}\tepoch_time\t{:.3f}\tlearning_rate\t{:.3f}\n".format(
                 e, epoch_error / data_loader.num_batches, epoch_speed, learning_rate))
 
-            # KAMIL czestotliwosc zapisu jest okreslana przez liczbe epok razy liczbe batchy
             if e % args.save_every == 0 or e == args.num_epochs - 1:  # save for the last result
 
                 # validate every saved model
@@ -334,8 +317,13 @@ def train(args):
                         learning_rate *= args.decay_rate
                         sess.run(tf.assign(model.lr, learning_rate))
 
-                saver.save(sess, checkpoint_path, global_step=e)
-                print("model saved to {}".format(checkpoint_path))
+                    if args.save_all or best_val_epoch == e:
+                        saver.save(sess, checkpoint_path, global_step=e)
+                        print("model saved to {}".format(checkpoint_path))
+
+                    if e - best_val_epoch >= args.max_worse_validations and args.max_worse_validations > 0:
+                        print("finishing early as {} evaluated models did not lower the validation loss".format(args.max_worse_validations))
+                        break
 
         train_writer.close()
         data_loader.close()
