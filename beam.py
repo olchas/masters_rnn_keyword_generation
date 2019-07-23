@@ -51,7 +51,6 @@ class BeamSearch():
         # Initialize the live sample with the prime.
         for i, label in enumerate(self.prime_labels):
             prime_sample.append(label)
-            # KAMIL liczenie score dla prime wordow na podstawie kolejnych predykcji nastepnych slow przez model
             # The first word does not contribute to the score as the probs have
             # not yet been determined.
             probs, prime_state = self.predict(prime_sample, prime_state, self.keywords_ids, self.keywords_count)
@@ -67,18 +66,17 @@ class BeamSearch():
         live_scores = [0]
         live_states = [prime_state]
 
-        # KAMIL generowanie sie konczy, jak dostaniemy k (width) zakonczonych sampli
+        # generation finishes as k (width) samples reach maxsample or eos token
         while live_k and dead_k < k:
             # total score for every sample is sum of -log of word prb
-            # KAMIL tutaj chyba dla kazdego live sampla mamy prawdopodobienstwo dla kazdego slowa ze slownika
             cand_scores = np.array(live_scores)[:, None] - np.log(probs)
             if not use_unk and oov is not None:
                 cand_scores[:, oov] = 1e20
-            # KAMIL splaszczenie powoduje koniecznosc dzielenia przez rozmiar slownictwa
+
             cand_flat = cand_scores.flatten()
 
             # find the best (lowest) scores we have from all possible samples and new words
-            # KAMIL sposrod wszystkich wynikow wybieranych jest k najlepszych minus dead_k (czyli tyle, ile sie zdazylo zakonczyc)
+            # choose k - dead_k (number of already finished samples) best sequences so far
             ranks_flat = cand_flat.argsort()[:(k - dead_k)]
             live_scores = cand_flat[ranks_flat]
 
@@ -87,8 +85,7 @@ class BeamSearch():
             live_samples = [live_samples[r // voc_size] + [r % voc_size] for r in ranks_flat]
             live_states = [live_states[r // voc_size] for r in ranks_flat]
 
-            # live samples that should be dead are...
-            # KAMIL to taka maska
+            # mask showing which live samples should be dead
             zombie = [s[-1] == eos or len(s) >= maxsample for s in live_samples]
 
             # add zombies to the dead

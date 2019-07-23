@@ -323,7 +323,7 @@ class TextLoader():
 
         self.bpe_model_path = bpe_model_path
 
-        # KAMIL words to lista slow posortowana od najczestszych
+        # words is a list of unique words sorted by their occurence
         if vocabulary is None:
             self.vocab, self.words = self.build_vocab(list(data[0]), vocab_size, bpe_model)
             self.vocab_size = len(self.words)
