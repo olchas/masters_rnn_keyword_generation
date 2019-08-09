@@ -143,10 +143,13 @@ def evaluate(args):
             with open(os.path.join(args.input_dir, category + '_test_utterances_stripped.txt'), 'w') as f:
                 categories[category]['data']['expected'].to_csv(f, sep='\t', header=False, index=False)
 
-            categories[category]['metrics'].update(compute_metrics(hypothesis=os.path.join(args.input_dir, category + '_generated_utterances_stripped.txt'),
-                                                                   references=[os.path.join(args.input_dir, category + '_test_utterances_stripped.txt')],
-                                                                   no_skipthoughts=True,
-                                                                   no_glove=True))
+            try:
+                categories[category]['metrics'].update(compute_metrics(hypothesis=os.path.join(args.input_dir, category + '_generated_utterances_stripped.txt'),
+                                                                       references=[os.path.join(args.input_dir, category + '_test_utterances_stripped.txt')],
+                                                                       no_skipthoughts=True,
+                                                                       no_glove=True))
+            except:
+                categories[category]['metrics']['METEOR'] = 0.0
 
             print()
 

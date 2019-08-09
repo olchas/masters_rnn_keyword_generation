@@ -122,8 +122,7 @@ class Model():
                 attention_layer_size=self.rnn_size)
 
         self.initial_state = self.cell.zero_state(args.batch_size, tf.float32)
-        current_state = self.initial_state
-
+        
         helper = tf.contrib.seq2seq.TrainingHelper(inputs, self.target_sequence_length, time_major=True)
 
         maximum_iterations = None
@@ -135,7 +134,7 @@ class Model():
         decoder = tf.contrib.seq2seq.BasicDecoder(
             self.cell,
             helper,
-            current_state,
+            self.initial_state,
             output_layer=projection_layer
         )
 
