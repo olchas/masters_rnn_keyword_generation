@@ -64,13 +64,8 @@ class BahdanauCoverageAttention(BahdanauAttention):
         score_mask_value=score_mask_value,
         dtype=dtype,
         name=name)
-    self._coverage_layer = layers_core.Dense(num_units, name="coverage_layer", use_bias=False, dtype=dtype)
 
-  @property
-  def coverage_layer(self):
-    return self._coverage_layer
-
-  def __call__(self, query, state, previous_alignment_sum):
+  def __call__(self, query, state, coverage_vector):
     """Score the query based on the keys and values.
 
     Args:
@@ -79,7 +74,7 @@ class BahdanauCoverageAttention(BahdanauAttention):
       state: Tensor of dtype matching `self.values` and shape
         `[batch_size, alignments_size]`
         (`alignments_size` is memory's `max_time`).
-      previous_alignment_sum: Tensor of dtype matching `self.values` and shape
+      coverage_vector: Tensor of dtype matching `self.values` and shape
         `[batch_size, alignments_size]`
         (`alignments_size` is memory's `max_time`).
 
@@ -91,7 +86,6 @@ class BahdanauCoverageAttention(BahdanauAttention):
 
     with variable_scope.variable_scope(None, "bahdanau_attention", [query]):
       processed_query = self.query_layer(query) if self.query_layer else query
-      coverage_vector = self.coverage_layer(previous_alignment_sum)
       score = _bahdanau_coverage_score(processed_query, self._keys, coverage_vector)
     alignments = self._probability_fn(score, state)
     next_state = alignments
@@ -110,7 +104,7 @@ def _bahdanau_coverage_score(processed_query, keys, coverage_vector):
   Args:
     processed_query: Tensor, shape `[batch_size, num_units]` to compare to keys.
     keys: Processed memory, shape `[batch_size, max_time, num_units]`.
-    coverage_vector: Tensor, shape `[batch_size, num_units]`.
+    coverage_vector: Tensor, shape `[batch_size, max_time]`.
 
   Returns:
     A `[batch_size, max_time]` tensor of unnormalized score values.
@@ -120,11 +114,13 @@ def _bahdanau_coverage_score(processed_query, keys, coverage_vector):
   num_units = keys.shape[2].value or array_ops.shape(keys)[2]
   # Reshape from [batch_size, ...] to [batch_size, 1, ...] for broadcasting.
   processed_query = array_ops.expand_dims(processed_query, 1)
-  coverage_vector = array_ops.expand_dims(coverage_vector, 1)
+  coverage_vector = array_ops.expand_dims(coverage_vector, 2)
   v = variable_scope.get_variable(
       "attention_v", [num_units], dtype=dtype)
+  w_c = variable_scope.get_variable(
+        "coverage_w_c", [num_units], dtype=dtype)
 
-  return math_ops.reduce_sum(v * math_ops.tanh(keys + processed_query + coverage_vector), [2])
+  return math_ops.reduce_sum(v * math_ops.tanh(keys + processed_query + w_c * coverage_vector), [2])
 
 
 class CustomAttentionWrapperState(
@@ -189,7 +185,7 @@ def _custom_compute_attention(attention_mechanism, cell_output, attention_state,
                               attention_layer, previous_alignment_sum):
   """Computes the attention and alignments for a given attention_mechanism."""
   alignments, next_attention_state = attention_mechanism(
-      cell_output, state=attention_state, previous_alignment_sum=previous_alignment_sum)
+      cell_output, state=attention_state, coverage_vector=previous_alignment_sum)
 
   # Reshape from [batch_size, memory_time] to [batch_size, 1, memory_time]
   expanded_alignments = array_ops.expand_dims(alignments, 1)
