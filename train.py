@@ -195,6 +195,8 @@ def train(args):
         tf.global_variables_initializer().run()
 
         saver = tf.train.Saver(tf.global_variables())
+
+        zero_state = sess.run(model.initial_state)
         # restore model
         if args.init_from is not None:
             saver.restore(sess, ckpt.model_checkpoint_path)
@@ -220,7 +222,6 @@ def train(args):
 
             data_loader.reset_batch_pointer()
 
-            zero_state = sess.run(model.initial_state)
             state = zero_state
 
             epoch_error = 0
@@ -325,8 +326,9 @@ def train(args):
                         print("finishing early as {} evaluated models did not lower the validation loss".format(args.max_worse_validations))
                         break
 
-        train_writer.close()
-        data_loader.close()
+                else:
+                    saver.save(sess, checkpoint_path, global_step=e)
+                    print("model saved to {}".format(checkpoint_path))
 
     training_log.close()
 
@@ -334,6 +336,8 @@ def train(args):
         validation_log.close()
         val_data_loader.close()
 
+    train_writer.close()
+    data_loader.close()
 
 if __name__ == '__main__':
     main()
