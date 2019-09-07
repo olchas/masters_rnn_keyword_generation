@@ -61,17 +61,18 @@ def clean_str(string):
 
 
 class TextLoader():
-    def __init__(self, load_preprocessed, corpus_type, data_dir, batch_size, seq_length, vocab_size, unk_max_number, unk_max_count, vocabulary, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings=None, use_attention=False, pos_tags=[], encoding=None):
+    def __init__(self, load_preprocessed, corpus_type, data_dir, batch_size, seq_length, vocab_size, unk_max_number, unk_max_count, vocabulary, use_bpe, bpe_size, bpe_model_path, pretrained_embeddings=None, provide_keywords=False, key_word_count_multiplier=1, pos_tags=[], encoding=None):
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.seq_length = seq_length
         self.corpus_type = corpus_type
 
-        self.attention_model = use_attention
+        self.provide_keywords = provide_keywords
+        self.key_word_count_multiplier = key_word_count_multiplier
 
         self.input_file = os.path.join(data_dir, "input.txt")
         self.words_vocab_file = os.path.join(data_dir, "words_vocab.pkl")
-        self.key_words_file = os.path.join(data_dir, "input_tagged.txt") if self.attention_model else None
+        self.key_words_file = os.path.join(data_dir, "input_tagged.txt") if self.provide_keywords else None
         self.database_file = os.path.join(self.data_dir, self.corpus_type)
         self.embedding_dir = os.path.dirname(pretrained_embeddings) if pretrained_embeddings is not None else None
 
@@ -187,13 +188,15 @@ class TextLoader():
         database = h5py.File(self.database_file, 'w')
         data_file = open(os.path.join(self.data_dir, 'input_cleaned.txt'))
         target_weights_batch = []
+        target_sequence_length_batch = []
         data_batch = []
         target_batch = []
         batch_counter = 0
-        if self.attention_model:
+        if self.provide_keywords:
 
             key_words_batch = []
             key_words_count_batch = []
+            key_words_weights_batch = []
 
             for line in data_file:
                 line_items = line.strip().split('\t')
@@ -202,35 +205,47 @@ class TextLoader():
 
                 key_words_count = len(key_words)
 
-                target_weights_batch.append([1] * len(sentence) + [0] * (self.seq_length - len(sentence)))
+                target_sequence_length = len(sentence)
+
+                target_weights_batch.append([1] * target_sequence_length + [0] * (self.seq_length - target_sequence_length))
+
+                key_words_weights_batch.append([1] * key_words_count + [0] * (self.seq_length - key_words_count))
 
                 target_sentence = sentence[1:] + [sentence[0]]
 
                 # zero pad to seq_length
                 key_words = key_words + [0] * (self.seq_length - key_words_count)
-                sentence = sentence + [0] * (self.seq_length - len(sentence))
-                target_sentence = target_sentence + [0] * (self.seq_length - len(target_sentence))
+                sentence = sentence + [0] * (self.seq_length - target_sequence_length)
+                target_sentence = target_sentence + [0] * (self.seq_length - target_sequence_length)
 
                 key_words_count_batch.append(key_words_count)
                 key_words_batch.append(key_words)
                 data_batch.append(sentence)
                 target_batch.append(target_sentence)
+                target_sequence_length_batch.append(target_sequence_length)
 
                 if len(data_batch) == self.batch_size:
+                    if self.key_word_count_multiplier > 1:
+                        key_words_count_batch = [min(key_words_count * self.key_word_count_multiplier, self.seq_length) for key_words_count in key_words_count_batch]
                     database.create_group(str(batch_counter))
                     database[str(batch_counter)].create_dataset('data', data=np.array(data_batch).transpose())
                     database[str(batch_counter)].create_dataset('target', data=np.array(target_batch).transpose())
                     database[str(batch_counter)].create_dataset('target_weights', data=np.array(target_weights_batch).transpose())
+                    database[str(batch_counter)].create_dataset('target_sequence_length', data=np.array(target_sequence_length_batch))
 
                     # For the attention mechanism, we need to make sure the "memory" passed in is batch major, so we need to transpose attention_states.
                     database[str(batch_counter)].create_dataset('key_words', data=np.array(key_words_batch))
                     database[str(batch_counter)].create_dataset('key_words_count', data=np.array(key_words_count_batch))
+                    database[str(batch_counter)].create_dataset('key_words_weights', data=np.array(key_words_weights_batch))
 
                     key_words_batch = []
                     key_words_count_batch = []
+                    key_words_weights_batch = []
+
                     target_weights_batch = []
                     data_batch = []
                     target_batch = []
+                    target_sequence_length_batch = []
 
                     batch_counter += 1
 
@@ -238,26 +253,31 @@ class TextLoader():
             for line in data_file:
                 sentence = eval(line.strip().split('\t')[0])
 
-                target_weights_batch.append([1] * len(sentence) + [0] * (self.seq_length - len(sentence)))
+                target_sequence_length = len(sentence)
+
+                target_weights_batch.append([1] * target_sequence_length + [0] * (self.seq_length - target_sequence_length))
 
                 target_sentence = sentence[1:] + [sentence[0]]
 
                 # zero pad to seq_length
-                sentence = sentence + [0] * (self.seq_length - len(sentence))
-                target_sentence = target_sentence + [0] * (self.seq_length - len(target_sentence))
+                sentence = sentence + [0] * (self.seq_length - target_sequence_length)
+                target_sentence = target_sentence + [0] * (self.seq_length - target_sequence_length)
 
                 data_batch.append(sentence)
                 target_batch.append(target_sentence)
+                target_sequence_length_batch.append(target_sequence_length)
 
                 if len(data_batch) == self.batch_size:
                     database.create_group(str(batch_counter))
                     database[str(batch_counter)].create_dataset('data', data=np.array(data_batch).transpose())
                     database[str(batch_counter)].create_dataset('target', data=np.array(target_batch).transpose())
                     database[str(batch_counter)].create_dataset('target_weights', data=np.array(target_weights_batch).transpose())
+                    database[str(batch_counter)].create_dataset('target_sequence_length', data=np.array(target_sequence_length_batch))
 
                     target_weights_batch = []
                     data_batch = []
                     target_batch = []
+                    target_sequence_length_batch = []
 
                     batch_counter += 1
 
@@ -306,7 +326,7 @@ class TextLoader():
             data = data[data[0].map(len) <= self.seq_length]
 
             # encode each key word separately
-            if self.attention_model:
+            if self.provide_keywords:
                 data['key_words'] = data['key_words'].apply(lambda sentence: [bpe_model.EncodeAsIds(word) for word in sentence])
 
                 data['key_words'] = data['key_words'].apply(lambda sentence: list(itertools.chain.from_iterable(sentence)))
@@ -338,12 +358,12 @@ class TextLoader():
         if self.bpe_model_path is None:
             data[0] = data[0].apply(
                 lambda sentence: [self.sos_token] + [self.vocab.get(word, self.unk_token) for word in sentence] + [self.eos_token])
-            if self.attention_model:
+            if self.provide_keywords:
                 data['key_words'] = data['key_words'].apply(
                     lambda sentence: [self.vocab[word] for word in sentence if word in self.vocab])
 
         # remove training sentences without any key_words or with more key_words than sequence length
-        if self.attention_model:
+        if self.provide_keywords:
             data = data[(data['key_words'].map(len) > 0) & (data['key_words'].map(len) <= self.seq_length)]
 
             print("Size after removing utterances with wrong number of key words: {}".format(len(data)))
@@ -370,10 +390,12 @@ class TextLoader():
         x = self.database[batch_index]['data']
         y = self.database[batch_index]['target']
         target_weights = self.database[batch_index]['target_weights']
-        key_words = self.database[batch_index]['key_words'] if self.attention_model else None
-        key_words_count = self.database[batch_index]['key_words_count'] if self.attention_model else None
+        target_sequence_length = self.database[batch_index]['target_sequence_length']
+        key_words = self.database[batch_index]['key_words'] if self.provide_keywords else None
+        key_words_count = self.database[batch_index]['key_words_count'] if self.provide_keywords else None
+        key_words_weights = self.database[batch_index]['key_words_weights'] if self.provide_keywords else None
         self.pointer += 1
-        return x, y, target_weights, key_words, key_words_count
+        return x, y, target_weights, target_sequence_length, key_words, key_words_count, key_words_weights
 
     def reset_batch_pointer(self):
         self.pointer = 0
