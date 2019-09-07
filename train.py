@@ -29,12 +29,16 @@ def main():
     parser.add_argument('--use_attention', default=False, action='store_true',
                        help='whether to use an attention model'
                             'if other than None, input_tagged.txt file must be present in data directories')
+    parser.add_argument('--without_coverage_loss', default=False, action='store_true',
+                       help="whether to not include coverage loss in bahdanau_coverage model's loss calculation")
     parser.add_argument('--attention_type', default='luong', choices=['bahdanau', 'luong', 'bahdanau_coverage'], type=str,
                        help='type of attention to use')
     parser.add_argument('--pos_tags', type=str, nargs='+',
                         default=['_JJ', '_JJR', '_JJS', '_NN', '_NNP', '_NNPS', '_NNS', '_RB', '_RBR', '_RBS', '_VB', '_VBD', '_VBG', '_VBN', '_VBP', '_VBZ'],
                         help='list of pos tags that should be used as keywords')
-    parser.add_argument('--state_initialization', default='prev', choices=['prev', 'zero'], type=str,
+    parser.add_argument('--key_word_count_multiplier', type=int, default=1,
+                       help='if you want to multiply key words counts to make <unk> vectors appear in attention mechanism')
+    parser.add_argument('--state_initialization', default='random', choices=['prev', 'random', 'zero', 'average'], type=str,
                        help='how the state of rnn should be initialized for each batch during training')
     parser.add_argument('--rnn_size', type=int, default=200,
                        help='size of RNN hidden state')
@@ -102,6 +106,11 @@ def main():
 
 def train(args):
 
+    provide_key_words = args.use_attention or args.state_initialization == 'average'
+
+    if args.use_attention and args.state_initialization == 'prev' and args.attention_type == 'bahdanau_coverage':
+        args.state_initialization = 'random'
+
     data_loader = TextLoader(args.load_preprocessed,
                              'training',
                              args.data_dir,
@@ -115,7 +124,8 @@ def train(args):
                              args.bpe_size,
                              args.bpe_model_path,
                              args.pretrained_embeddings,
-                             args.use_attention,
+                             provide_key_words,
+                             args.key_word_count_multiplier,
                              args.pos_tags,
                              args.input_encoding)
 
@@ -140,7 +150,8 @@ def train(args):
                                      args.bpe_size,
                                      data_loader.bpe_model_path,
                                      args.pretrained_embeddings,
-                                     args.use_attention,
+                                     provide_key_words,
+                                     args.key_word_count_multiplier,
                                      args.pos_tags,
                                      args.input_encoding)
 
@@ -225,29 +236,32 @@ def train(args):
             state = zero_state
 
             epoch_error = 0
+            epoch_coverage_loss = 0
 
             # as every epoch is started, save its number in the model
             sess.run(tf.assign(model.epoch_pointer, e))
 
             for b in range(data_loader.pointer, data_loader.num_batches):
-                x, y, target_weights, key_words, key_words_count = data_loader.next_batch()
 
-                target_sequence_length = np.sum(target_weights, axis=0)
+                x, y, target_weights, target_sequence_length, key_words, key_words_count, key_words_weights = data_loader.next_batch()
 
                 if args.state_initialization == 'zero':
                     state = zero_state
 
-                # prepare a dict feeding data to the model
                 if key_words is not None:
                     feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights,
                             model.target_sequence_length: target_sequence_length, model.initial_state: state,
-                            model.attention_key_words: key_words, model.attention_states_count: key_words_count}
+                            model.attention_key_words: key_words, model.attention_states_count: key_words_count, model.attention_states_weights: key_words_weights}
                 else:
                     feed = {model.input_data: x, model.targets: y, model.target_weights: target_weights,
                             model.target_sequence_length: target_sequence_length, model.initial_state: state}
 
                 summary, train_loss, state, _ = sess.run([merged, model.cost, model.final_state,
                                                           model.train_op], feed)
+
+                # if model trained has bahdanau_coverage attention type, collect coverage_loss as well
+                if args.use_attention and args.attention_type == 'bahdanau_coverage':
+                    epoch_coverage_loss += np.sum(state.coverage_loss)
 
                 # accumulate the train_loss
                 epoch_error += train_loss
@@ -256,10 +270,16 @@ def train(args):
                     train_writer.add_summary(summary, e * data_loader.num_batches + b)
 
             epoch_speed = time.time() - epoch_start
-            print("epoch\t{}\tepoch_loss\t{:.3f}\tepoch_time\t{:.3f}\tlearning_rate\t{:.3f}\n".format(
-                e, epoch_error / data_loader.num_batches, epoch_speed, learning_rate))
-            training_log.write("epoch\t{}\tepoch_loss\t{:.3f}\tepoch_time\t{:.3f}\tlearning_rate\t{:.3f}\n".format(
-                e, epoch_error / data_loader.num_batches, epoch_speed, learning_rate))
+            if args.use_attention and args.attention_type == 'bahdanau_coverage':
+                print("epoch\t{}\tepoch_loss\t{:.3f}\tepoch_coverage_loss\t{:.3f}\tepoch_time\t{:.3f}\tlearning_rate\t{:.3f}\n".format(
+                    e, epoch_error / data_loader.num_batches, epoch_coverage_loss / args.batch_size / data_loader.num_batches, epoch_speed, learning_rate))
+                training_log.write("epoch\t{}\tepoch_loss\t{:.3f}\tepoch_coverage_loss\t{:.3f}\tepoch_time\t{:.3f}\tlearning_rate\t{:.3f}\n".format(
+                    e, epoch_error / data_loader.num_batches, epoch_coverage_loss / args.batch_size / data_loader.num_batches, epoch_speed, learning_rate))
+            else:
+                print("epoch\t{}\tepoch_loss\t{:.3f}\tepoch_time\t{:.3f}\tlearning_rate\t{:.3f}\n".format(
+                    e, epoch_error / data_loader.num_batches, epoch_speed, learning_rate))
+                training_log.write("epoch\t{}\tepoch_loss\t{:.3f}\tepoch_time\t{:.3f}\tlearning_rate\t{:.3f}\n".format(
+                    e, epoch_error / data_loader.num_batches, epoch_speed, learning_rate))
 
             if e % args.save_every == 0 or e == args.num_epochs - 1:  # save for the last result
 
@@ -271,37 +291,52 @@ def train(args):
 
                     val_error = 0
 
+                    val_coverage_loss = 0
+
+                    val_state = zero_state
+
                     for val_b in range(val_data_loader.pointer, val_data_loader.num_batches):
 
-                        val_x, val_y, val_target_weights, val_key_words, val_key_words_count = val_data_loader.next_batch()
+                        if args.state_initialization == 'zero':
+                            val_state = zero_state
 
-                        val_target_sequence_length = np.sum(val_target_weights, axis=0)
+                        val_x, val_y, val_target_weights, val_target_sequence_length, val_key_words, val_key_words_count, val_key_words_weights = val_data_loader.next_batch()
 
                         if val_key_words is not None:
                             val_feed = {model.input_data: val_x, model.targets: val_y,
                                         model.target_weights: val_target_weights,
                                         model.target_sequence_length: val_target_sequence_length,
-                                        model.initial_state: zero_state,
+                                        model.initial_state: val_state,
                                         model.attention_key_words: val_key_words,
-                                        model.attention_states_count: val_key_words_count}
+                                        model.attention_states_count: val_key_words_count,
+                                        model.attention_states_weights: val_key_words_weights}
                         else:
                             val_feed = {model.input_data: val_x, model.targets: val_y,
                                         model.target_weights: val_target_weights,
                                         model.target_sequence_length: val_target_sequence_length,
-                                        model.initial_state: zero_state}
+                                        model.initial_state: val_state}
 
-                        val_train_loss = sess.run([model.cost], val_feed)
+                        val_train_loss, val_state = sess.run([model.cost, model.final_state], val_feed)
 
-                        val_error += val_train_loss[0]
+                        val_error += val_train_loss
+                        # if model trained has bahdanau_coverage attention type, collect coverage_loss as well
+                        if args.use_attention and args.attention_type == 'bahdanau_coverage':
+                            val_coverage_loss += np.sum(val_state.coverage_loss)
 
                     mean_val_error = val_error / val_data_loader.num_batches
 
                     val_speed = time.time() - val_start
 
-                    print("epoch\t{}\tvalidation_loss\t{:.3f}\tvalidation_time\t{:.3f}\n".format(
-                        e, mean_val_error, val_speed))
-                    validation_log.write("epoch\t{}\tvalidation_loss\t{:.3f}\tvalidation_time\t{:.3f}\n".format(
-                        e, mean_val_error, val_speed))
+                    if args.use_attention and args.attention_type == 'bahdanau_coverage':
+                        print("epoch\t{}\tvalidation_loss\t{:.3f}\tval_coverage_loss\t{:.3f}\tvalidation_time\t{:.3f}\n".format(
+                            e, mean_val_error, val_coverage_loss / args.batch_size / val_data_loader.num_batches, val_speed))
+                        validation_log.write("epoch\t{}\tvalidation_loss\t{:.3f}\tval_coverage_loss\t{:.3f}\tvalidation_time\t{:.3f}\n".format(
+                            e, mean_val_error, val_coverage_loss / args.batch_size / val_data_loader.num_batches, val_speed))
+                    else:
+                        print("epoch\t{}\tvalidation_loss\t{:.3f}\tvalidation_time\t{:.3f}\n".format(
+                            e, mean_val_error, val_speed))
+                        validation_log.write("epoch\t{}\tvalidation_loss\t{:.3f}\tvalidation_time\t{:.3f}\n".format(
+                            e, mean_val_error, val_speed))
 
                     # save information about best validation error and epoch in model
                     if best_val_error is None or best_val_error > mean_val_error:
