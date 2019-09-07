@@ -126,7 +126,7 @@ def _bahdanau_coverage_score(processed_query, keys, coverage_vector):
 class CustomAttentionWrapperState(
     collections.namedtuple("CustomAttentionWrapperState",
                            ("cell_state", "attention", "time", "alignments",
-                            "alignment_history", "attention_state", "alignment_sum"))):
+                            "alignment_history", "attention_state", "alignment_sum", "coverage_loss"))):
   """`namedtuple` storing the state of a `AttentionWrapper`.
 
   Contains:
@@ -145,7 +145,8 @@ class CustomAttentionWrapperState(
        The objects may contain Tensors or TensorArrays.
     - `alignment_sum`: A single or tuple of `Tensor`(s) containing the sum of alignments
        from the previous time steps for each attention mechanism.
-  """
+    - `coverage_loss`: A single or tuple of `Tensor`(s) containing the coverage loss up to this point
+    """
 
   def clone(self, **kwargs):
     """Clone this object, overriding components provided by kwargs.
@@ -318,6 +319,8 @@ class CustomAttentionWrapper(AttentionWrapper):
         alignment_history=self._item_or_tuple(
             () for _ in self._attention_mechanisms),
         alignment_sum=self._item_or_tuple(
+            a.alignments_size for a in self._attention_mechanisms),
+        coverage_loss=self._item_or_tuple(
             a.alignments_size for a in self._attention_mechanisms))  # sometimes a TensorArray
 
   def zero_state(self, batch_size, dtype):
@@ -375,6 +378,9 @@ class CustomAttentionWrapper(AttentionWrapper):
               if self._alignment_history else ()
               for _ in self._attention_mechanisms),
           alignment_sum=self._item_or_tuple(
+              attention_mechanism.initial_alignments(batch_size, dtype)
+              for attention_mechanism in self._attention_mechanisms),
+          coverage_loss=self._item_or_tuple(
               attention_mechanism.initial_alignments(batch_size, dtype)
               for attention_mechanism in self._attention_mechanisms))
 
@@ -436,16 +442,19 @@ class CustomAttentionWrapper(AttentionWrapper):
       previous_attention_state = state.attention_state
       previous_alignment_history = state.alignment_history
       previous_alignment_sum = state.alignment_sum
+      previous_coverage_loss = state.coverage_loss
     else:
       previous_attention_state = [state.attention_state]
       previous_alignment_history = [state.alignment_history]
       previous_alignment_sum = [state.alignment_sum]
+      previous_coverage_loss = [state.coverage_loss]
 
     all_alignments = []
     all_attentions = []
     all_attention_states = []
     maybe_all_histories = []
     all_alignment_sums = []
+    all_coverage_losses = []
     for i, attention_mechanism in enumerate(self._attention_mechanisms):
       attention, alignments, next_attention_state = _custom_compute_attention(
           attention_mechanism, cell_output, previous_attention_state[i],
@@ -458,6 +467,8 @@ class CustomAttentionWrapper(AttentionWrapper):
       all_alignments.append(alignments)
       all_attentions.append(attention)
       all_alignment_sums.append(previous_alignment_sum[i] + alignments)
+
+      all_coverage_losses.append(previous_coverage_loss[i] + math_ops.minimum(previous_alignment_sum[i], alignments))
       maybe_all_histories.append(alignment_history)
 
     attention = array_ops.concat(all_attentions, 1)
@@ -468,7 +479,8 @@ class CustomAttentionWrapper(AttentionWrapper):
         attention_state=self._item_or_tuple(all_attention_states),
         alignments=self._item_or_tuple(all_alignments),
         alignment_history=self._item_or_tuple(maybe_all_histories),
-        alignment_sum=self._item_or_tuple(all_alignment_sums))
+        alignment_sum=self._item_or_tuple(all_alignment_sums),
+        coverage_loss=self._item_or_tuple(all_coverage_losses))
 
     if self._output_attention:
       return attention, next_state
