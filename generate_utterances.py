@@ -39,15 +39,18 @@ def parse_arguments():
                              'this embedding must match vocabulary of input data')
     parser.add_argument('--tokens', default=False, action='store_true',
                         help='use <s> and </s> tokens to determine start and end of sequence')
-    parser.add_argument('--state_initialization', default='average', choices=['average', 'zero'], type=str,
+    parser.add_argument('--state_initialization', default='random', choices=['average', 'zero', 'random'], type=str,
                        help='how the state of rnn should be initialized')
     parser.add_argument('--start_index', default=0, type=int,
                        help='index of first utterance from test_file to generate')
     parser.add_argument('--nr_of_loops', default=None, type=int,
                        help='nr of utterances to generate')
     parser.add_argument('--quiet', '-q', default=False, action='store_true',
-                        help='suppress printing the prime text (default false)')
-
+                        help='suppress printing the prime text (default: false)')
+    parser.add_argument('--with_stop_words', default=False, action='store_true',
+                        help='set to true if you want to include stop words in key words (default: false)')
+    parser.add_argument('--all_keywords', default=False, action='store_true',
+                        help='provide model with all keywords even if they are outside of dictionary (they will be replaced with unks) (default: false)')
     return parser.parse_args()
 
 
@@ -83,9 +86,12 @@ def evaluate(args):
 
     keywords = [[word.split('_')[0]
                  for word in tagged_utterance.split()[args.prime:]
-                 if word.endswith(tuple(saved_args.pos_tags))
-                 and word.split('_')[0] not in stop_words]
+                 if word.endswith(tuple(saved_args.pos_tags))]
                 for tagged_utterance in tagged_utterances]
+
+    if not args.with_stop_words:
+        keywords = [[keyword for keyword in keyword_group if keyword not in stop_words]
+                    for keyword_group in keywords]
 
     # for bpe model assume all keywords are known
     if saved_args.bpe_model_path is not None:
@@ -95,6 +101,9 @@ def evaluate(args):
                           for keyword_group in keywords]
 
     generated_data = []
+
+    # make sure that state_initialization is not 'average' or model will ignore state passed to it
+    saved_args.state_initialization = 'zero'
 
     model = Model(saved_args, True)
     with tf.Session() as sess:
@@ -115,7 +124,12 @@ def evaluate(args):
 
             prime = ' '.join(test_utterance.split()[:args.prime])
 
-            utterance_keywords = known_keywords[i] if not args.dont_provide_keywords else []
+            if args.dont_provide_keywords:
+                utterance_keywords = []
+            elif args.all_keywords:
+                utterance_keywords = keywords[i]
+            else:
+                utterance_keywords = known_keywords[i]
 
             # allow to produce up to 2 times more words than expected
             if saved_args.bpe_model_path is not None:
@@ -144,7 +158,7 @@ def evaluate(args):
             # index, expected utterance, generated utterance, all keywords, known keywords, number of prime words, if unk words present
             generated_data.append([str(i), test_utterance, generated_utterance, ' '.join(keywords[i]), ' '.join(known_keywords[i]), str(args.prime), str(with_unk)])
 
-            print('\t'.join(generated_data[-1]))
+            # print('\t'.join(generated_data[-1]))
 
     if args.start_index != 0:
         file_mode = 'a'
