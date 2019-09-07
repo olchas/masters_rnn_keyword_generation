@@ -1,3 +1,6 @@
+from numpy.random import seed
+seed(1)
+
 import os
 import random
 from six.moves import cPickle
@@ -14,6 +17,10 @@ from beam import BeamSearch
 
 class Model():
     def __init__(self, args, helper_type=None):
+        if 'without_coverage_loss' not in args:
+            args.without_coverage_loss = False
+        if 'key_word_count_multiplier' not in args:
+            args.key_word_count_multiplier = 1
         self.args = args
 
         self.attention_seq_length = args.seq_length
@@ -40,6 +47,7 @@ class Model():
 
         self.attention_key_words = tf.placeholder(tf.int32, [args.batch_size, self.attention_seq_length])
         self.attention_states_count = tf.placeholder(tf.int32, args.batch_size)
+        self.attention_states_weights = tf.placeholder(tf.float32, [args.batch_size, self.attention_seq_length])
 
         self.best_val_epoch = tf.Variable(0, name="best_val_epoch", trainable=False, dtype=tf.int32)
         self.best_val_error = tf.Variable(0.0, name="best_val_error", trainable=False, dtype=tf.float32)
@@ -94,9 +102,11 @@ class Model():
 
         self.attention_model = False
 
-        if args.use_attention:
+        if args.use_attention or args.state_initialization == 'average':
 
             attention_states = tf.nn.embedding_lookup(self.embedding, self.attention_key_words)
+
+        if args.use_attention:
 
             if args.attention_type == 'bahdanau':
                 attention_type = tf.contrib.seq2seq.BahdanauAttention
@@ -122,7 +132,32 @@ class Model():
                 attention_layer_size=self.rnn_size)
 
         self.initial_state = self.cell.zero_state(args.batch_size, tf.float32)
-        
+
+        # calculate average only by real key words in each sequence
+        if args.state_initialization == 'average' and self.embedding_size == self.rnn_size:
+            real_attention_states_count = tf.reduce_sum(self.attention_states_weights, axis=1)
+            broadcasted = tf.broadcast_to(tf.expand_dims(self.attention_states_weights, 2), [args.batch_size, self.attention_seq_length, self.rnn_size])
+            # mean_embedding = tf.reduce_mean(tf.slice(attention_states, [0, 0, 0], [args.batch_size, tf.keras.backend.max(self.attention_states_count), self.rnn_size]), axis=1)
+            mean_embedding = tf.reduce_sum(broadcasted * attention_states, axis=1) / tf.expand_dims(real_attention_states_count, 1)
+            lstm_cells_state = tuple(
+                    [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
+
+            if self.attention_model:
+                starting_state = self.cell.zero_state(args.batch_size, tf.float32).clone(cell_state=lstm_cells_state)
+            else:
+                starting_state = lstm_cells_state
+        elif args.state_initialization == 'random':
+            state_placeholder = tf.random_normal(shape=(self.num_layers, 2, args.batch_size, self.rnn_size), mean=0.0, stddev=1.0)
+            l = tf.unstack(state_placeholder, axis=0)
+            lstm_cells_state = tuple([tf.nn.rnn_cell.LSTMStateTuple(l[idx][0],l[idx][1]) for idx in range(self.num_layers)])
+
+            if self.attention_model:
+                starting_state = self.cell.zero_state(args.batch_size, tf.float32).clone(cell_state=lstm_cells_state)
+            else:
+                starting_state = lstm_cells_state
+        else:
+            starting_state = self.initial_state
+
         helper = tf.contrib.seq2seq.TrainingHelper(inputs, self.target_sequence_length, time_major=True)
 
         maximum_iterations = None
@@ -134,7 +169,7 @@ class Model():
         decoder = tf.contrib.seq2seq.BasicDecoder(
             self.cell,
             helper,
-            self.initial_state,
+            starting_state,
             output_layer=projection_layer
         )
 
@@ -161,7 +196,10 @@ class Model():
         # calculate cross entropy as the loss
         crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(
             labels=labels, logits=self.logits)
-        self.cost = tf.reduce_sum(crossent * target_weigths_cut) / args.batch_size
+        if self.attention_model and args.attention_type == 'bahdanau_coverage' and not args.without_coverage_loss:
+            self.cost = (tf.reduce_sum(crossent * target_weigths_cut) + tf.reduce_sum(self.final_state.coverage_loss)) / args.batch_size
+        else:
+            self.cost = tf.reduce_sum(crossent * target_weigths_cut) / args.batch_size
 
         tf.summary.scalar("cost", self.cost)
 
@@ -182,14 +220,14 @@ class Model():
         else:
             return tf.matmul(tf.nn.embedding_lookup(self.embedding, words), self.embedding_w) + self.embedding_b
 
-    def sample(self, sess, words, vocab, num=50, prime='', sampling_type=1, pick=0, width=4, quiet=False, tokens=False, keywords=[], state_initialization='average'):
+    def sample(self, sess, words, vocab, num=50, prime='', sampling_type=1, pick=0, width=4, quiet=False, tokens=False, keywords=[], state_initialization='random'):
 
         def weighted_pick(weights):
             t = np.cumsum(weights)
             s = np.sum(weights)
             return int(np.searchsorted(t, np.random.rand(1)*s))
 
-        def beam_search_predict(sample, state, keywords_ids=None, keywords_count=None):
+        def beam_search_predict(sample, state, attention_key_words=None, keywords_count=None):
             """Returns the updated probability distribution (`probs`) and
             `state` for a given `sample`. `sample` should be a sequence of
             vocabulary labels, with the last word to be tested against the RNN.
@@ -198,20 +236,20 @@ class Model():
             x = np.zeros((1, 1))
             x[0, 0] = sample[-1]
             if keywords_count is not None:
-                feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+                feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: attention_key_words, self.attention_states_count: keywords_count}
             else:
                 feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1]}
             [probs, final_state] = sess.run([self.probs, self.final_state],
                                             feed)
             return probs, final_state
 
-        def beam_search_pick(prime_labels, width, initial_state, tokens=False, keywords_ids=None, keywords_count=None):
+        def beam_search_pick(prime_labels, width, initial_state, tokens=False, attention_key_words=None, keywords_count=None):
             """Returns the beam search pick."""
 
             bs = BeamSearch(beam_search_predict,
                             initial_state,
                             prime_labels,
-                            keywords_ids,
+                            attention_key_words,
                             keywords_count)
             eos = vocab.get('</s>', 0) if tokens else None
             oov = vocab.get('<unk>', None)
@@ -220,8 +258,9 @@ class Model():
             return samples[np.argmin(scores)]
 
         ret = []
-        keywords_ids = None
+        keywords_ids = []
         keywords_count = None
+        attention_key_words = None
 
         # take only up to seq_length keywords
         keywords = keywords[:self.attention_seq_length]
@@ -231,41 +270,46 @@ class Model():
         if keywords:
 
             # key words outside of vocabulary are not used
-            keywords_ids = [vocab[keyword] for keyword in keywords if keyword in vocab]
+            keywords_ids = [vocab.get(keyword, unk_token) for keyword in keywords]
 
-            # if there are no keywords in dictionary, then assign the zero state
-            if not keywords_ids or state_initialization == 'zero':
-                initial_state = sess.run(self.cell.zero_state(1, tf.float32))
+        if self.attention_model:
 
-            # prepare initial state as average of keyword embeddings
-            elif state_initialization == 'average':
+            keywords_count = [len(keywords_ids)] if keywords_ids else [1]
+            attention_key_words = [keywords_ids + [unk_token] * (self.attention_seq_length - len(keywords_ids))]
 
-                keywords_embedded = sess.run(self.embedding_lookup(keywords_ids))
-                mean_embedding = np.mean(keywords_embedded, axis=0)
-                mean_embedding = mean_embedding.reshape(1, mean_embedding.shape[0])
+            # multiply only if there were keywords provided
+            if self.args.key_word_count_multiplier > 1 and keywords_ids:
 
-                if self.attention_model:
-                    mean_embedding = tf.convert_to_tensor(mean_embedding, dtype=tf.float32)
-                    lstm_cells_state = tuple(
-                        [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
+                keywords_count = [min(keywords_count[0] * self.args.key_word_count_multiplier, self.attention_seq_length)]
 
-                    # TODO: decide whether state of attention cells should be initiated as well
-                    initial_state = sess.run(self.cell.zero_state(1, tf.float32).clone(cell_state=lstm_cells_state))
-                else:
-
-                    initial_state = tuple(
-                        [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
+        # prepare initial state as average of keyword embeddings
+        if state_initialization == 'average' and keywords_ids:
+            keywords_embedded = sess.run(self.embedding_lookup(keywords_ids))
+            mean_embedding = np.mean(keywords_embedded, axis=0)
+            mean_embedding = mean_embedding.reshape(1, mean_embedding.shape[0])
 
             if self.attention_model:
+                mean_embedding = tf.convert_to_tensor(mean_embedding, dtype=tf.float32)
+                lstm_cells_state = tuple(
+                    [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
 
-                keywords_ids = [keywords_ids + [unk_token] * (self.attention_seq_length - len(keywords_ids))]
-                keywords_count = [len(keywords_ids)] if keywords_ids else [1]
+                initial_state = sess.run(self.cell.zero_state(1, tf.float32).clone(cell_state=lstm_cells_state))
+            else:
 
-        else:
+                initial_state = tuple(
+                    [tf.nn.rnn_cell.LSTMStateTuple(mean_embedding, mean_embedding) for _ in range(self.num_layers)])
+
+        elif state_initialization == 'zero':
             initial_state = sess.run(self.cell.zero_state(1, tf.float32))
+        else:
+            random_state = np.random.rand(self.num_layers, 2, 1, self.rnn_size)
+
             if self.attention_model:
-                keywords_count = [1]
-                keywords_ids = [[unk_token] * self.attention_seq_length]
+                random_state = tf.convert_to_tensor(random_state, dtype=tf.float32)
+                lstm_cells_state = tuple([tf.nn.rnn_cell.LSTMStateTuple(random_state[idx][0], random_state[idx][1]) for idx in range(self.num_layers)])
+                initial_state = sess.run(self.cell.zero_state(1, tf.float32).clone(cell_state=lstm_cells_state))
+            else:
+                initial_state = tuple([tf.nn.rnn_cell.LSTMStateTuple(random_state[idx][0], random_state[idx][1]) for idx in range(self.num_layers)])
 
         if tokens and not prime.startswith('<s>'):
             prime = '<s> ' + prime
@@ -283,7 +327,7 @@ class Model():
                 # only the state matters while we are feeding the prime words
                 x[0, 0] = vocab.get(word, unk_token)
                 if self.attention_model:
-                    feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+                    feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: attention_key_words, self.attention_states_count: keywords_count}
                 else:
                     feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1]}
                 [state] = sess.run([self.final_state], feed)
@@ -295,7 +339,7 @@ class Model():
                 x = np.zeros((1, 1))
                 x[0, 0] = vocab.get(word, unk_token)
                 if self.attention_model:
-                    feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: keywords_ids, self.attention_states_count: keywords_count}
+                    feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1], self.attention_key_words: attention_key_words, self.attention_states_count: keywords_count}
                 else:
                     feed = {self.input_data: x, self.initial_state: state, self.target_sequence_length: [1]}
                 [probs, state] = sess.run([self.probs, self.final_state], feed)
@@ -316,7 +360,7 @@ class Model():
                     break
                 ret += [word]
         elif pick == 2:
-            pred = beam_search_pick([vocab.get(word, unk_token) for word in prime.split()], width, initial_state, tokens, keywords_ids, keywords_count)
+            pred = beam_search_pick([vocab.get(word, unk_token) for word in prime.split()], width, initial_state, tokens, attention_key_words, keywords_count)
             for i, label in enumerate(pred):
                 ret += [words[label] if i > 0 else words[label]]
         return ret
