@@ -21,10 +21,12 @@ def main():
     evaluate(args)
 
 
-def calculate_key_words_accuracy(generated_sentences, keywords, data_raw=None, output_dir=None):
+def calculate_key_words_metrics(generated_sentences, keywords, data_raw=None, output_dir=None):
 
-    keywords_count = 0
-    keywords_generated = 0
+    all_keywords_expected = 0
+    keywords_correctly_generated = 0
+    all_keywords_generated = 0
+    keywords_overgenerated = 0
 
     if data_raw is not None and output_dir is not None:
         if not os.path.exists(output_dir):
@@ -34,63 +36,47 @@ def calculate_key_words_accuracy(generated_sentences, keywords, data_raw=None, o
 
     for i, generated_sentence in enumerate(generated_sentences):
 
-        expected_keywords = set(keywords[i].split())
+        expected_keywords = keywords[i].split()
         generated_sentence_words = generated_sentence.split()
-        sentence_keywords_generated = 0
+        sentence_keywords_correctly_generated = 0
 
         # for each unique key word
-        for keyword in expected_keywords:
-            keywords_count += 1
-            if keyword in generated_sentence_words:
-                sentence_keywords_generated += 1
+        for keyword in set(expected_keywords):
+            expected_count = expected_keywords.count(keyword)
+            generated_count = generated_sentence_words.count(keyword)
 
-        sentence_accuracy = float(sentence_keywords_generated) / len(expected_keywords) if expected_keywords else 0.0
-        keywords_generated += sentence_keywords_generated
+            all_keywords_expected += expected_count
+            all_keywords_generated += generated_count
+
+            # consider no more than expected count of that key word
+            sentence_keywords_correctly_generated += min(expected_count, generated_count)
+
+            keywords_overgenerated += max(generated_count - expected_count, 0)
+
+        sentence_accuracy = float(sentence_keywords_correctly_generated) / len(expected_keywords) if expected_keywords else 0.0
+        keywords_correctly_generated += sentence_keywords_correctly_generated
 
         if sentence_accuracy == 1.0 and data_raw is not None:
             print('\t'.join([str(i), data_raw['expected'][i], data_raw['generated'][i], str(expected_keywords)]))
             if output_dir is not None:
                 best_utterances_file.write('\t'.join([str(i), data_raw['expected'][i], data_raw['generated'][i], str(expected_keywords)]) + '\n')
 
-    key_word_accuracy = keywords_generated / keywords_count if keywords_count else 0.0
+    key_word_accuracy = keywords_correctly_generated / all_keywords_expected if all_keywords_expected else 0.0
+    key_word_overloading = keywords_overgenerated / all_keywords_generated if all_keywords_generated else 0.0
 
-    return key_word_accuracy
-
-
-def calculate_key_words_overloading(generated_sentences, keywords):
-
-    keywords_overgenerated = 0
-    keywords_generated = 0
-    keywords_expected = 0
-
-    for i, generated_sentence in enumerate(generated_sentences):
-
-        expected_keywords = keywords[i].split()
-        generated_sentence_words = generated_sentence.split()
-
-        for keyword in set(expected_keywords):
-            keywords_generated += generated_sentence_words.count(keyword)
-            # add how many more of that key word appeared in generated sequence
-            keywords_overgenerated += max(generated_sentence_words.count(keyword) - expected_keywords.count(keyword), 0)
-
-            keywords_expected += expected_keywords.count(keyword)
-
-    key_word_overloading = keywords_overgenerated / keywords_generated if keywords_generated else 0.0
-
-    return key_word_overloading, keywords_generated, keywords_overgenerated, keywords_expected
-
+    return key_word_accuracy, key_word_overloading, all_keywords_generated, keywords_correctly_generated, keywords_overgenerated, all_keywords_expected
 
 def evaluate(args):
 
     # list to get the desired order of metric printed
-    metrics = ['nr', 'all_key_words_expected', 'known_key_words_expected', 'known_key_words_generated',
+    metrics = ['nr', 'all_key_words_expected', 'known_key_words_expected', 'known_key_words_generated', 'known_key_words_correctly_generated',
                'known_key_words_overgenerated', 'all_key_word_accuracy', 'known_key_word_accuracy',
                'known_key_word_overloading']
 
     if not args.accuracy_only:
         from nlgeval import compute_metrics
 
-        metrics += ['METEOR']
+        metrics += ['Bleu_1', 'Bleu_2', 'Bleu_3', 'Bleu_4', 'METEOR', 'ROUGE_L', 'CIDEr']
 
     data = pd.read_csv(os.path.join(args.input_dir, 'generated_utterances.txt'), sep='\t')
 
@@ -118,22 +104,23 @@ def evaluate(args):
 
         categories[category]['metrics']['nr'] = len(categories[category]['data'])
 
-        categories[category]['metrics']['all_key_word_accuracy'] = calculate_key_words_accuracy(list(categories[category]['data']['generated']),
-                                                                                                list(categories[category]['data']['all_keywords']))
+        (categories[category]['metrics']['all_key_word_accuracy'],
+         _,
+         _,
+         _,
+         _,
+         categories[category]['metrics']['all_key_words_expected']) = calculate_key_words_metrics(list(categories[category]['data']['generated']),
+                                                                                                  list(categories[category]['data']['all_keywords']))
 
-        _, _, _, categories[category]['metrics']['all_key_words_expected'] = calculate_key_words_overloading(list(categories[category]['data']['generated']), list(categories[category]['data']['all_keywords']))
-
-        categories[category]['metrics']['known_key_word_accuracy'] = calculate_key_words_accuracy(
-            list(categories[category]['data']['generated']),
-            list(categories[category]['data']['known_keywords']),
-            data_raw if category == '1_full' else None,
-            args.input_dir)
-
-        (categories[category]['metrics']['known_key_word_overloading'],
+        (categories[category]['metrics']['known_key_word_accuracy'],
+         categories[category]['metrics']['known_key_word_overloading'],
          categories[category]['metrics']['known_key_words_generated'],
+         categories[category]['metrics']['known_key_words_correctly_generated'],
          categories[category]['metrics']['known_key_words_overgenerated'],
-         categories[category]['metrics']['known_key_words_expected']) = calculate_key_words_overloading(list(categories[category]['data']['generated']),
-                                                                                                        list(categories[category]['data']['known_keywords']))
+         categories[category]['metrics']['known_key_words_expected']) = calculate_key_words_metrics(list(categories[category]['data']['generated']),
+                                                                                                    list(categories[category]['data']['known_keywords']),
+                                                                                                    data_raw if category == '1_full' else None,
+                                                                                                    args.input_dir)
 
         if not args.accuracy_only:
 
@@ -149,8 +136,13 @@ def evaluate(args):
                                                                        no_skipthoughts=True,
                                                                        no_glove=True))
             except:
+                categories[category]['metrics']['Bleu_1'] = 0.0
+                categories[category]['metrics']['Bleu_2'] = 0.0
+                categories[category]['metrics']['Bleu_3'] = 0.0
+                categories[category]['metrics']['Bleu_4'] = 0.0
                 categories[category]['metrics']['METEOR'] = 0.0
-
+                categories[category]['metrics']['ROUGE_L'] = 0.0
+                categories[category]['metrics']['CIDEr'] = 0.0
             print()
 
         for metric in metrics:
