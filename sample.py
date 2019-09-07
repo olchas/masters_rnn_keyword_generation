@@ -35,7 +35,7 @@ def parse_arguments():
                             'this embedding must match vocabulary of input data')
     parser.add_argument('--tokens', '-t', default=False, action='store_true',
                         help='use <s> and <\s> tokens to determine start and end of sequence')
-    parser.add_argument('--state_initialization', default='average', choices=['average', 'zero'], type=str,
+    parser.add_argument('--state_initialization', default='random', choices=['average', 'zero', 'random'], type=str,
                        help='how the state of rnn should be initialized')
     parser.add_argument('--keywords', '-k', type=str, nargs='*', default=[],
                         help='list of space separated keywords to use for initial state')
@@ -59,6 +59,9 @@ def sample(args):
         saved_args.bpe_model_path = args.bpe_model_path
     with open(saved_args.words_vocab_file, 'rb') as f:
         words, vocab = cPickle.load(f)
+
+    # make sure that state_initialization is not 'average' or model will ignore state passed to it
+    saved_args.state_initialization = 'zero'
 
     model = Model(saved_args, True)
 
