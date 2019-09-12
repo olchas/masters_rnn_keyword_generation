@@ -1,3 +1,9 @@
+# masters_rnn_keyword_generation
+
+This repository was forked from word-rnn-tensorflow. It was used to prepare master's thesis under title: Controlled text generation with keywords.
+
+Original README.md contents below.
+
 # word-rnn-tensorflow
 [![Build Status](https://travis-ci.org/hunkim/word-rnn-tensorflow.svg?branch=master)](https://travis-ci.org/hunkim/word-rnn-tensorflow)
 
