@@ -43,7 +43,7 @@ python-dateutil==2.7.3
 python-utils==2.3.0
 pytz==2018.7
 PyWavelets==1.0.1
-PyYAML==3.13
+PyYAML==5.4
 requests==2.19.1
 s3transfer==0.1.13
 scikit-image==0.14.0
