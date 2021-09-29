@@ -31,7 +31,7 @@ Markdown==3.0.1
 matplotlib==3.0.0
 networkx==2.2
 -e git+https://github.com/Maluuba/nlg-eval.git@329dd5b659ba33415616d2d571a07fa1d3073841#egg=nlg_eval
-nltk==3.4
+nltk==3.6.3
 numpy==1.15.2
 opencv-python==3.4.4.19
 pandas==0.23.4
