@@ -19,7 +19,7 @@ gensim==3.6.0
 google-pasta==0.1.7
 grpcio==1.17.1
 h5py==2.8.0
-html5lib==0.9999999
+html5lib==0.99999999
 idna==2.7
 imutils==0.5.1
 jmespath==0.9.3
